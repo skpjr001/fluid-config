@@ -2,33 +2,22 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
-	"net"
 	"net/http"
-	"sort"
+	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-type httpErr struct {
-	code int
-	msg  string
-}
-
-func (e *httpErr) Error() string { return e.msg }
-
-type Server struct {
-	store   *Store
-	cfg     *StaticConfig
-	limiter *limiter
+// API serves the generated REST APIs (the api listener).
+type API struct {
+	app     *App
+	limiter *RateLimiter
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -39,82 +28,151 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	enc.Encode(v)
 }
 
+// fail writes the public error shape: {"error": {"code", "message"}}.
 func fail(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]any{"error": map[string]any{"code": code, "message": msg}})
 }
 
 func failErr(w http.ResponseWriter, err error) {
 	var he *httpErr
-	if errors.As(err, &he) {
+	switch {
+	case errors.As(err, &he):
 		fail(w, he.code, he.msg)
-		return
+	case errors.Is(err, ErrInvalid):
+		fail(w, 422, strings.TrimPrefix(err.Error(), "invalid: "))
+	default:
+		slog.Error("internal error", "kind", "system", "err", err)
+		fail(w, 500, "internal error")
 	}
-	slog.Error("internal error", "err", err)
-	fail(w, 500, "internal error")
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	rec := &statusRec{ResponseWriter: w, code: 200}
-	s.route(rec, r)
-	slog.Info("req", "method", r.Method, "path", r.URL.Path, "status", rec.code,
-		"ip", s.clientIP(r).String(), "ms", time.Since(start).Milliseconds())
-}
-
+// statusRec remembers the status and size of a response.
 type statusRec struct {
 	http.ResponseWriter
-	code int
+	code  int
+	bytes int64
 }
 
-func (s *statusRec) WriteHeader(c int) { s.code = c; s.ResponseWriter.WriteHeader(c) }
+func (s *statusRec) WriteHeader(c int) {
+	if s.code == 0 {
+		s.code = c
+	}
+	s.ResponseWriter.WriteHeader(c)
+}
 
-func (s *Server) route(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	if s.cfg.BasePath != "" {
-		if !strings.HasPrefix(path, s.cfg.BasePath+"/") {
-			fail(w, 404, "not found")
+func (s *statusRec) Write(p []byte) (int, error) {
+	if s.code == 0 {
+		s.code = 200
+	}
+	n, err := s.ResponseWriter.Write(p)
+	s.bytes += int64(n)
+	return n, err
+}
+
+func (s *statusRec) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
+
+func requestID(r *http.Request) string {
+	if id := r.Header.Get("X-Request-Id"); requestIDRe.MatchString(id) {
+		return id
+	}
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// reqInfo is filled while a request is handled and logged at the end.
+type reqInfo struct {
+	api, client, note string
+}
+
+func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	rid := requestID(r)
+	w.Header().Set("X-Request-Id", rid)
+	rec := &statusRec{ResponseWriter: w}
+	info := &reqInfo{}
+	a.route(rec, r, rid, info)
+	if rec.code == 0 {
+		rec.code = 200
+	}
+	if isHealthPath(r) && rec.code == 200 {
+		return // probes would drown the logs
+	}
+	class := strconv.Itoa(rec.code/100) + "xx"
+	a.app.metrics.Inc("fluid_api_requests_total", "api", info.api, "method", r.Method, "code", class)
+	level := slog.LevelInfo
+	if rec.code >= 500 {
+		level = slog.LevelError
+	} else if rec.code >= 400 {
+		level = slog.LevelWarn
+	}
+	msg := r.Method + " " + r.URL.Path + " " + strconv.Itoa(rec.code)
+	if info.note != "" {
+		msg += ": " + info.note
+	}
+	slog.Log(r.Context(), level, msg, "kind", "api", "direction", "inbound", "api", info.api, "client", info.client,
+		"method", r.Method, "url", r.URL.RequestURI(), "status", rec.code, "bytes_out", rec.bytes,
+		"bytes_in", max(r.ContentLength, 0), "ms", time.Since(start).Milliseconds(),
+		"source_ip", ClientIP(r, a.app.cfg.trusted).String(), "request_id", rid, "capture", captureFrom(r.Context()))
+}
+
+func (a *API) route(w http.ResponseWriter, r *http.Request, rid string, info *reqInfo) {
+	app := a.app
+	switch r.URL.Path {
+	case "/livez":
+		writeJSON(w, 200, map[string]any{"live": true})
+		return
+	case "/readyz":
+		app.readyz(w, r)
+		return
+	case "/healthz":
+		writeJSON(w, 200, map[string]any{"ok": true, "apis": len(app.store.All())})
+		return
+	case "/_catalog", "/openapi.json":
+		info.api = strings.TrimPrefix(r.URL.Path, "/")
+		if !a.catalogAllowed(w, r, info) {
 			return
 		}
-		path = strings.TrimPrefix(path, s.cfg.BasePath)
-	}
-	switch path {
-	case "/healthz":
-		writeJSON(w, 200, map[string]any{"ok": true, "apis": len(s.store.All())})
-		return
-	case "/_catalog":
-		if s.catalogAuth(w, r) {
-			writeJSON(w, 200, s.catalog())
-		}
-		return
-	case "/openapi.json":
-		if s.catalogAuth(w, r) {
-			writeJSON(w, 200, s.openAPI(r))
+		if r.URL.Path == "/_catalog" {
+			writeJSON(w, 200, app.catalog())
+		} else {
+			writeJSON(w, 200, app.openAPI(r, app.cfg.APIBasePath))
 		}
 		return
 	}
 
-	parts := strings.Split(strings.Trim(path, "/"), "/")
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 2 || len(parts) > 3 {
 		fail(w, 404, "not found")
 		return
 	}
-	spec := s.store.Get(parts[0] + "/" + parts[1])
+	spec := app.store.Get(parts[0] + "/" + parts[1])
 	if spec == nil || !spec.enabled() {
 		fail(w, 404, "api not found")
 		return
 	}
+	info.api = spec.key()
 
-	// CORS + preflight before auth (browsers send preflight without credentials)
-	if s.cors(w, r, spec) {
+	// CORS and preflight come before auth: browsers send preflights without credentials.
+	if a.cors(w, r, spec) {
 		return
 	}
-	ip := s.clientIP(r)
-	if !spec.allowsIP(ip) {
-		fail(w, 403, "ip not allowed")
+	ip := ClientIP(r, app.cfg.trusted)
+	if _, ok := spec.allowsIP(ip); !ok {
+		app.metrics.Inc("fluid_access_denied_total", "listener", "api")
+		info.note = "source IP not allowed"
+		if spec.restrictedDefault() {
+			info.note += " (no allowed_ips: only loopback and private networks may call it)"
+		}
+		fail(w, 403, "forbidden: your address is not allowed")
 		return
 	}
-	if spec.RateLimit > 0 && !s.limiter.allow(spec.key()+"|"+ip.String(), spec.RateLimit) {
-		w.Header().Set("Retry-After", strconv.Itoa(60-time.Now().Second()))
+	if ok, wait := a.limiter.Allow(spec.key()+"|"+ip.String(), spec.limit); !ok {
+		app.metrics.Inc("fluid_rate_limited_total", "api", spec.key())
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		info.note = "rate limited"
 		fail(w, 429, "rate limit exceeded")
 		return
 	}
@@ -123,54 +181,122 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "method not allowed")
 		return
 	}
-	if !(spec.Auth.ReadPublic && r.Method == http.MethodGet) && !spec.Auth.check(r) {
-		switch spec.Auth.Type {
-		case "bearer":
-			w.Header().Set("WWW-Authenticate", `Bearer realm="fluid-config"`)
-		case "basic":
-			w.Header().Set("WWW-Authenticate", `Basic realm="fluid-config"`)
+	read := r.Method == http.MethodGet || r.Method == http.MethodHead
+	who := actor{via: "api", ip: ip.String(), requestID: rid}
+	if read && spec.Auth.ReadPublic {
+		who.name = "anonymous"
+	} else {
+		name, ok := spec.Auth.check(r)
+		if !ok {
+			switch spec.Auth.Type {
+			case "bearer":
+				w.Header().Set("WWW-Authenticate", `Bearer realm="fluid-config"`)
+			case "basic":
+				w.Header().Set("WWW-Authenticate", `Basic realm="fluid-config"`)
+			}
+			info.note = "bad or missing credentials"
+			fail(w, 401, "unauthorized")
+			return
 		}
-		fail(w, 401, "unauthorized")
-		return
+		who.name = name
 	}
+	info.client = who.name
 	if r.Body != nil {
-		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, app.cfg.MaxBodyBytes)
 	}
 
+	if read && a.serveCached(w, r, spec) {
+		return
+	}
 	if len(parts) == 2 {
 		switch r.Method {
-		case http.MethodGet:
-			s.list(w, r, spec)
+		case http.MethodGet, http.MethodHead:
+			a.cached(w, r, spec, func(w http.ResponseWriter) { a.list(w, r, spec) })
 		case http.MethodPost:
-			s.create(w, r, spec)
+			a.create(w, r, spec, who)
 		default:
-			fail(w, 405, "use /"+parts[0]+"/"+parts[1]+"/{id} for "+r.Method)
+			fail(w, 405, "use "+spec.basePath()+"/{id} for "+r.Method)
 		}
 		return
 	}
 	id := parts[2]
-	if id == "_schema" && r.Method == http.MethodGet {
-		writeJSON(w, 200, schemaView(spec))
+	if id == "_schema" && read {
+		a.cached(w, r, spec, func(w http.ResponseWriter) { writeJSON(w, 200, schemaView(spec)) })
 		return
 	}
 	switch r.Method {
-	case http.MethodGet:
-		s.get(w, r, spec, id)
+	case http.MethodGet, http.MethodHead:
+		a.cached(w, r, spec, func(w http.ResponseWriter) { a.get(w, r, spec, id) })
 	case http.MethodPut:
-		s.replace(w, r, spec, id)
+		a.replace(w, r, spec, id, who)
 	case http.MethodPatch:
-		s.patch(w, r, spec, id)
+		a.patch(w, r, spec, id, who)
 	case http.MethodDelete:
-		s.del(w, spec, id)
+		if err := app.deleteRecord(r.Context(), spec.key(), id, r.Header.Get("If-Match"), who); err != nil {
+			failErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		fail(w, 405, "method not allowed")
 	}
 }
 
+// ---------- in-memory cache ----------
+
+func cacheKey(r *http.Request, spec *APISpec) string {
+	return spec.etag + "|" + r.URL.Path + "?" + r.URL.Query().Encode()
+}
+
+// serveCached answers from the cache when the API caches and the entry is fresh.
+func (a *API) serveCached(w http.ResponseWriter, r *http.Request, spec *APISpec) bool {
+	if !spec.cacheOn() || r.Header.Get("Cache-Control") == "no-cache" {
+		return false
+	}
+	e := a.app.cache.Get(spec.key(), cacheKey(r, spec))
+	if e == nil {
+		return false
+	}
+	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == e.header.Get("ETag") {
+		copyHeaders(w.Header(), e.header)
+		w.Header().Set("X-Cache", "HIT")
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	copyHeaders(w.Header(), e.header)
+	w.Header().Set("X-Cache", "HIT")
+	w.WriteHeader(e.status)
+	w.Write(e.body)
+	return true
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, v := range src {
+		dst[k] = append([]string(nil), v...)
+	}
+}
+
+// cached renders a response and, for APIs that cache, keeps a 200 for next time.
+func (a *API) cached(w http.ResponseWriter, r *http.Request, spec *APISpec, render func(http.ResponseWriter)) {
+	if !spec.cacheOn() {
+		render(w)
+		return
+	}
+	w.Header().Set("X-Cache", "MISS")
+	bw := &bufferWriter{ResponseWriter: w}
+	render(bw)
+	if bw.status == 200 && r.Method == http.MethodGet {
+		h := w.Header().Clone()
+		h.Del("X-Request-Id")
+		h.Del("X-Cache")
+		a.app.cache.Put(spec.key(), spec.Cache, &cachedResponse{key: cacheKey(r, spec), status: 200, header: h, body: bw.body})
+	}
+}
+
 // ---------- read ----------
 
-func (s *Server) cacheHeaders(w http.ResponseWriter, r *http.Request, spec *APISpec) bool {
-	w.Header().Set("ETag", spec.etag)
+func (a *API) cacheHeaders(w http.ResponseWriter, r *http.Request, spec *APISpec, etag string) bool {
+	w.Header().Set("ETag", etag)
 	if spec.CacheSeconds > 0 {
 		scope := "public"
 		if spec.Auth.Type != "none" && !spec.Auth.ReadPublic {
@@ -180,241 +306,48 @@ func (s *Server) cacheHeaders(w http.ResponseWriter, r *http.Request, spec *APIS
 	} else {
 		w.Header().Set("Cache-Control", "no-cache")
 	}
-	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == spec.etag {
+	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return true
 	}
 	return false
 }
 
-var reserved = map[string]bool{"q": true, "sort": true, "page": true, "limit": true, "fields": true}
-
-type filter struct {
-	field, op string
-	vals      []string
-}
-
-func parseFilters(r *http.Request) ([]filter, error) {
-	var fs []filter
-	for k, vals := range r.URL.Query() {
-		if reserved[k] {
-			continue
-		}
-		field, op := k, "eq"
-		if i := strings.IndexByte(k, '['); i > 0 && strings.HasSuffix(k, "]") {
-			field, op = k[:i], k[i+1:len(k)-1]
-		}
-		switch op {
-		case "eq", "ne", "gt", "gte", "lt", "lte", "like", "in", "exists":
-		default:
-			return nil, fmt.Errorf("unknown operator %q (eq ne gt gte lt lte like in exists)", op)
-		}
-		for _, v := range vals {
-			f := filter{field: field, op: op, vals: []string{v}}
-			if op == "in" {
-				f.vals = strings.Split(v, ",")
-			}
-			fs = append(fs, f)
-		}
-	}
-	return fs, nil
-}
-
-func getPath(row map[string]any, path string) (any, bool) {
-	var cur any = row
-	for _, p := range strings.Split(path, ".") {
-		m, ok := cur.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		cur, ok = m[p]
-		if !ok {
-			return nil, false
-		}
-	}
-	return cur, true
-}
-
-// compare: numeric when both sides parse as numbers, else string.
-func compare(a, b string) int {
-	fa, ea := strconv.ParseFloat(a, 64)
-	fb, eb := strconv.ParseFloat(b, 64)
-	if ea == nil && eb == nil {
-		switch {
-		case fa < fb:
-			return -1
-		case fa > fb:
-			return 1
-		}
-		return 0
-	}
-	return strings.Compare(a, b)
-}
-
-func (f filter) match(row map[string]any) bool {
-	v, ok := getPath(row, f.field)
-	if f.op == "exists" {
-		want := f.vals[0] != "false"
-		return ok == want
-	}
-	if !ok {
-		return f.op == "ne"
-	}
-	sv := toString(v)
-	switch f.op {
-	case "eq":
-		return compare(sv, f.vals[0]) == 0
-	case "ne":
-		return compare(sv, f.vals[0]) != 0
-	case "gt":
-		return compare(sv, f.vals[0]) > 0
-	case "gte":
-		return compare(sv, f.vals[0]) >= 0
-	case "lt":
-		return compare(sv, f.vals[0]) < 0
-	case "lte":
-		return compare(sv, f.vals[0]) <= 0
-	case "like":
-		return strings.Contains(strings.ToLower(sv), strings.ToLower(f.vals[0]))
-	case "in":
-		for _, x := range f.vals {
-			if compare(sv, strings.TrimSpace(x)) == 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func matchQ(row map[string]any, q string) bool {
-	for _, v := range row {
-		if strings.Contains(strings.ToLower(toString(v)), q) {
-			return true
-		}
-	}
-	return false
-}
-
-func project(row map[string]any, fields []string, idField string) map[string]any {
-	if len(fields) == 0 {
-		return row
-	}
-	out := map[string]any{idField: row[idField]}
-	for _, f := range fields {
-		if v, ok := getPath(row, f); ok {
-			out[f] = v
-		}
-	}
-	return out
-}
-
-func (s *Server) list(w http.ResponseWriter, r *http.Request, spec *APISpec) {
-	q := r.URL.Query()
-	filters, err := parseFilters(r)
+func (a *API) list(w http.ResponseWriter, r *http.Request, spec *APISpec) {
+	rq, err := parsePublicQuery(r.URL.Query(), a.app.cfg.MaxPageSize)
 	if err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
-	limit, page := 50, 1
-	if v := q.Get("limit"); v != "" {
-		if limit, err = strconv.Atoi(v); err != nil || limit < 1 {
-			fail(w, 400, "limit must be a positive integer")
-			return
-		}
-	}
-	if limit > s.cfg.MaxPageSize {
-		limit = s.cfg.MaxPageSize
-	}
-	if v := q.Get("page"); v != "" {
-		if page, err = strconv.Atoi(v); err != nil || page < 1 {
-			fail(w, 400, "page must be a positive integer")
-			return
-		}
-	}
-	if s.cacheHeaders(w, r, spec) {
+	if a.cacheHeaders(w, r, spec, spec.etag) {
 		return
 	}
-
-	search := strings.ToLower(q.Get("q"))
-	out := make([]map[string]any, 0)
-rows:
-	for _, row := range spec.Data {
-		for _, f := range filters {
-			if !f.match(row) {
-				continue rows
-			}
-		}
-		if search != "" && !matchQ(row, search) {
-			continue
-		}
-		out = append(out, row)
-	}
-
-	if sortSpec := q.Get("sort"); sortSpec != "" {
-		keys := strings.Split(sortSpec, ",")
-		sort.SliceStable(out, func(i, j int) bool {
-			for _, k := range keys {
-				desc := strings.HasPrefix(k, "-")
-				k = strings.TrimPrefix(k, "-")
-				a, aok := getPath(out[i], k)
-				b, bok := getPath(out[j], k)
-				if aok != bok {
-					return aok // missing values last
-				}
-				c := compare(toString(a), toString(b))
-				if c == 0 {
-					continue
-				}
-				if desc {
-					return c > 0
-				}
-				return c < 0
-			}
-			return false
-		})
-	}
-
-	total := len(out)
-	from := (page - 1) * limit
-	if from > total {
-		from = total
-	}
-	to := from + limit
-	if to > total {
-		to = total
-	}
-	var fields []string
-	if f := q.Get("fields"); f != "" {
-		fields = strings.Split(f, ",")
-	}
-	pageRows := make([]map[string]any, 0, to-from)
-	for _, row := range out[from:to] {
-		pageRows = append(pageRows, project(row, fields, spec.IDField))
-	}
+	all, page := rq.run(spec.Data, spec.IDField)
+	total := len(all)
 	writeJSON(w, 200, map[string]any{
-		"data": pageRows,
+		"data": page,
 		"meta": map[string]any{
 			"api": spec.Name, "version": spec.Version,
-			"total": total, "page": page, "limit": limit,
-			"pages": (total + limit - 1) / limit,
+			"total": total, "page": rq.offset/rq.limit + 1, "limit": rq.limit,
+			"pages": (total + rq.limit - 1) / rq.limit,
 		},
 	})
 }
 
-func (s *Server) get(w http.ResponseWriter, r *http.Request, spec *APISpec, id string) {
-	i, ok := spec.index[id]
+func (a *API) get(w http.ResponseWriter, r *http.Request, spec *APISpec, id string) {
+	row, ok := spec.record(id)
 	if !ok {
 		fail(w, 404, "record not found")
 		return
 	}
-	if s.cacheHeaders(w, r, spec) {
+	if a.cacheHeaders(w, r, spec, recordETag(row)) {
 		return
 	}
 	var fields []string
 	if f := r.URL.Query().Get("fields"); f != "" {
 		fields = strings.Split(f, ",")
 	}
-	writeJSON(w, 200, map[string]any{"data": project(spec.Data[i], fields, spec.IDField)})
+	writeJSON(w, 200, map[string]any{"data": project(row, fields, spec.IDField)})
 }
 
 // ---------- write ----------
@@ -424,179 +357,72 @@ func decodeObject(r *http.Request) (map[string]any, error) {
 	dec.UseNumber()
 	var m map[string]any
 	if err := dec.Decode(&m); err != nil || m == nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return nil, &httpErr{413, "body too large"}
+		}
 		return nil, &httpErr{400, "body must be a JSON object"}
+	}
+	if dec.More() {
+		return nil, &httpErr{400, "body must be one JSON object"}
 	}
 	return m, nil
 }
 
-func nextID(spec *APISpec) any {
-	max := new(big.Int)
-	numeric := len(spec.Data) > 0
-	for _, row := range spec.Data {
-		n, ok := new(big.Int).SetString(toString(row[spec.IDField]), 10)
-		if !ok {
-			numeric = false
-			break
-		}
-		if n.Cmp(max) > 0 {
-			max = n
-		}
-	}
-	if numeric {
-		return json.Number(max.Add(max, big.NewInt(1)).String())
-	}
-	b := make([]byte, 6)
-	rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-func (s *Server) create(w http.ResponseWriter, r *http.Request, spec *APISpec) {
+func (a *API) create(w http.ResponseWriter, r *http.Request, spec *APISpec, who actor) {
 	body, err := decodeObject(r)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
-	var created map[string]any
-	n, err := s.store.Mutate(spec.key(), func(cur *APISpec) ([]map[string]any, error) {
-		if _, has := body[cur.IDField]; !has || body[cur.IDField] == nil {
-			body[cur.IDField] = nextID(cur)
-		}
-		id := toString(body[cur.IDField])
-		if strings.ContainsAny(id, "/?#") || id == "_schema" {
-			return nil, &httpErr{400, "invalid id"}
-		}
-		if _, dup := cur.index[id]; dup {
-			return nil, &httpErr{409, "record already exists"}
-		}
-		if err := cur.validate(body, false); err != nil {
-			return nil, &httpErr{422, err.Error()}
-		}
-		created = body
-		return append(append(make([]map[string]any, 0, len(cur.Data)+1), cur.Data...), body), nil
-	})
+	row, n, err := a.app.createRecord(r.Context(), spec.key(), body, who)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
-	w.Header().Set("Location", s.cfg.BasePath+n.basePath()+"/"+toString(created[n.IDField]))
-	w.Header().Set("ETag", n.etag)
-	writeJSON(w, 201, map[string]any{"data": created})
+	w.Header().Set("Location", a.app.cfg.APIBasePath+n.basePath()+"/"+toString(row[n.IDField]))
+	w.Header().Set("ETag", recordETag(row))
+	writeJSON(w, 201, map[string]any{"data": row})
 }
 
-func (s *Server) replace(w http.ResponseWriter, r *http.Request, spec *APISpec, id string) {
+func (a *API) replace(w http.ResponseWriter, r *http.Request, spec *APISpec, id string, who actor) {
 	body, err := decodeObject(r)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
+	row, created, _, err := a.app.replaceRecord(r.Context(), spec.key(), id, body, r.Header.Get("If-Match"), who)
+	if err != nil {
+		failErr(w, err)
+		return
+	}
+	w.Header().Set("ETag", recordETag(row))
 	code := 200
-	n, err := s.store.Mutate(spec.key(), func(cur *APISpec) ([]map[string]any, error) {
-		if v, has := body[cur.IDField]; has && toString(v) != id {
-			return nil, &httpErr{400, "id in body does not match URL"}
-		}
-		if _, has := body[cur.IDField]; !has {
-			if i, ok := cur.index[id]; ok {
-				body[cur.IDField] = cur.Data[i][cur.IDField] // keep original type
-			} else {
-				body[cur.IDField] = id
-			}
-		}
-		if err := cur.validate(body, false); err != nil {
-			return nil, &httpErr{422, err.Error()}
-		}
-		data := append(make([]map[string]any, 0, len(cur.Data)+1), cur.Data...)
-		if i, ok := cur.index[id]; ok {
-			data[i] = body
-		} else {
-			data = append(data, body) // upsert
-			code = 201
-		}
-		return data, nil
-	})
-	if err != nil {
-		failErr(w, err)
-		return
+	if created {
+		code = 201
 	}
-	w.Header().Set("ETag", n.etag)
-	writeJSON(w, code, map[string]any{"data": body})
+	writeJSON(w, code, map[string]any{"data": row})
 }
 
-// PATCH uses JSON Merge Patch semantics: send null to remove a field.
-func (s *Server) patch(w http.ResponseWriter, r *http.Request, spec *APISpec, id string) {
+func (a *API) patch(w http.ResponseWriter, r *http.Request, spec *APISpec, id string, who actor) {
 	body, err := decodeObject(r)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
-	var merged map[string]any
-	n, err := s.store.Mutate(spec.key(), func(cur *APISpec) ([]map[string]any, error) {
-		i, ok := cur.index[id]
-		if !ok {
-			return nil, &httpErr{404, "record not found"}
-		}
-		if v, has := body[cur.IDField]; has && toString(v) != id {
-			return nil, &httpErr{400, "id cannot be changed"}
-		}
-		merged = make(map[string]any, len(cur.Data[i])+len(body))
-		for k, v := range cur.Data[i] {
-			merged[k] = v
-		}
-		for k, v := range body {
-			if v == nil {
-				delete(merged, k)
-			} else {
-				merged[k] = v
-			}
-		}
-		if err := cur.validate(merged, false); err != nil {
-			return nil, &httpErr{422, err.Error()}
-		}
-		data := append(make([]map[string]any, 0, len(cur.Data)), cur.Data...)
-		data[i] = merged
-		return data, nil
-	})
+	row, _, err := a.app.patchRecord(r.Context(), spec.key(), id, body, r.Header.Get("If-Match"), who)
 	if err != nil {
 		failErr(w, err)
 		return
 	}
-	w.Header().Set("ETag", n.etag)
-	writeJSON(w, 200, map[string]any{"data": merged})
-}
-
-func (s *Server) del(w http.ResponseWriter, spec *APISpec, id string) {
-	_, err := s.store.Mutate(spec.key(), func(cur *APISpec) ([]map[string]any, error) {
-		i, ok := cur.index[id]
-		if !ok {
-			return nil, &httpErr{404, "record not found"}
-		}
-		data := make([]map[string]any, 0, len(cur.Data)-1)
-		data = append(data, cur.Data[:i]...)
-		return append(data, cur.Data[i+1:]...), nil
-	})
-	if err != nil {
-		failErr(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("ETag", recordETag(row))
+	writeJSON(w, 200, map[string]any{"data": row})
 }
 
 // ---------- cross-cutting ----------
 
-func (s *Server) clientIP(r *http.Request) net.IP {
-	if s.cfg.TrustForwardedFor {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
-				return ip
-			}
-		}
-	}
-	h, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return net.ParseIP(h)
-}
-
 // cors sets headers; returns true if it fully handled a preflight.
-func (s *Server) cors(w http.ResponseWriter, r *http.Request, spec *APISpec) bool {
+func (a *API) cors(w http.ResponseWriter, r *http.Request, spec *APISpec) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" || len(spec.CORSOrigins) == 0 {
 		return false
@@ -612,9 +438,10 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request, spec *APISpec) boo
 	}
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Add("Vary", "Origin")
+	w.Header().Set("Access-Control-Expose-Headers", "ETag, Location, X-Request-Id, X-Cache")
 	if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 		w.Header().Set("Access-Control-Allow-Methods", strings.Join(spec.Methods, ", "))
-		hdrs := "Authorization, Content-Type, If-None-Match"
+		hdrs := "Authorization, Content-Type, If-None-Match, If-Match, X-Request-Id"
 		if spec.Auth.Header != "" {
 			hdrs += ", " + spec.Auth.Header
 		}
@@ -626,27 +453,37 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request, spec *APISpec) boo
 	return false
 }
 
-func (s *Server) catalogAuth(w http.ResponseWriter, r *http.Request) bool {
-	if s.cfg.CatalogToken == "" {
-		return true
-	}
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.CatalogToken)) != 1 {
-		fail(w, 401, "unauthorized")
+// catalogAllowed guards /_catalog and /openapi.json: the access.json catalog
+// allowlist, then any admin token unless public_catalog is on.
+func (a *API) catalogAllowed(w http.ResponseWriter, r *http.Request, info *reqInfo) bool {
+	ip := ClientIP(r, a.app.cfg.trusted)
+	if _, ok := a.app.store.Access().Catalog.list.Match(ip); !ok {
+		info.note = "source IP not in the catalog allowlist"
+		fail(w, 403, "forbidden: your address is not allowed")
 		return false
 	}
+	if a.app.cfg.PublicCatalog {
+		return true
+	}
+	p, ok := a.app.admin.authenticate(r)
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="fluid-config"`)
+		info.note = "the catalog needs an admin token (viewer or editor)"
+		fail(w, 401, "unauthorized: use a viewer or editor token from admin.json")
+		return false
+	}
+	info.client = "admin:" + p.Name
 	return true
 }
 
-func (s *Server) catalog() map[string]any {
-	var list []map[string]any
-	for _, a := range s.store.All() {
+func (app *App) catalog() map[string]any {
+	list := []map[string]any{}
+	for _, a := range app.store.All() {
 		list = append(list, map[string]any{
 			"name": a.Name, "version": a.Version, "description": a.Description,
-			"enabled": a.enabled(), "path": s.cfg.BasePath + a.basePath(),
+			"enabled": a.enabled(), "path": app.cfg.APIBasePath + a.basePath(),
 			"methods": a.Methods, "auth": a.Auth.Type, "read_public": a.Auth.ReadPublic,
-			"records": len(a.Data), "ip_restricted": len(a.CIDRs) > 0,
-			"rate_limit_per_min": a.RateLimit,
+			"records": len(a.Data), "public": a.public(), "cache": a.cacheOn(),
 		})
 	}
 	return map[string]any{"apis": list}
@@ -656,27 +493,15 @@ func (s *Server) catalog() map[string]any {
 func schemaView(a *APISpec) map[string]any {
 	return map[string]any{
 		"name": a.Name, "version": a.Version, "description": a.Description,
-		"id_field": a.IDField, "methods": a.Methods, "auth": a.Auth.Type,
-		"strict_fields": a.StrictFields, "fields": a.Fields, "records": len(a.Data),
+		"id_field": a.IDField, "methods": a.Methods, "auth": a.Auth.Type, "read_public": a.Auth.ReadPublic,
+		"strict_fields": a.StrictFields, "fields": orEmptyMap(a.Fields), "records": len(a.Data),
+		"max_records": a.MaxRecords,
 	}
 }
 
-// ---------- rate limiter: fixed 1-minute window per api+ip ----------
-
-type limiter struct {
-	mu     sync.Mutex
-	window int64
-	counts map[string]int
-}
-
-func newLimiter() *limiter { return &limiter{counts: map[string]int{}} }
-
-func (l *limiter) allow(key string, perMin int) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if w := time.Now().Unix() / 60; w != l.window {
-		l.window, l.counts = w, map[string]int{}
+func orEmptyMap[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return map[K]V{}
 	}
-	l.counts[key]++
-	return l.counts[key] <= perMin
+	return m
 }

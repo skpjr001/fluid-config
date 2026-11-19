@@ -1,12 +1,22 @@
+# fluid-config behind Traefik: the APIs get TLS from Traefik; the console stays
+# on localhost (reach it with an SSH tunnel: ssh -L 9090:127.0.0.1:9090 host).
+#
+# Without mounts fluid-config creates /app/config.json and /app/dynamic
+# (apis/ with an example, admin.json with a generated editor token,
+# access.json) on first start. Read the token with:
+#   docker compose exec fluid-config /fluid-config token -config /app/config.json
 services:
   fluid-config:
     build: .
     restart: unless-stopped
-    # container runs as uid 65532: `sudo chown -R 65532 ./apis` once, since writes go back to the files
-    env_file: .env                      # HOLIDAYS_TOKEN=..., FLUID_CATALOG_TOKEN=...
+    stop_grace_period: 30s                  # > shutdown_timeout (15s): in-flight writes finish on docker stop
+    env_file: .env                          # HOLIDAYS_TOKEN=... for env: tokens in API files; optional FLUID_ADMIN_TOKEN
     volumes:
-      - ./config.json:/app/config.json:ro
-      - ./apis:/app/apis
+      - ./config.json:/app/config.json:ro   # cp config.docker.json config.json
+      - fluid-dynamic:/app/dynamic          # API files: records written through the API live here
+      - fluid-data:/app/data                # SQLite: request logs and change history
+    ports:
+      - "127.0.0.1:9090:9090"               # console - localhost only
     networks: [traefik]
     labels:
       - traefik.enable=true
@@ -14,6 +24,10 @@ services:
       - traefik.http.routers.fluid.entrypoints=websecure
       - traefik.http.routers.fluid.tls.certresolver=le
       - traefik.http.services.fluid.loadbalancer.server.port=8090
+
+volumes:
+  fluid-dynamic:
+  fluid-data:
 
 networks:
   traefik:

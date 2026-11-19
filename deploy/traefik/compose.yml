@@ -1,0 +1,50 @@
+# Traefik v3 in front of fluid-config:
+#   https://config.example.com/...      -> the APIs (subdomain)
+#   https://example.com/config-admin/   -> console (path, StripPrefix; fluid-config reads X-Forwarded-Prefix)
+# fluid-config config.json: "admin_addr": ":9090", "trusted_proxies": ["172.31.0.0/24"]
+# API files then see the real client address in allowed_ips checks and logs.
+services:
+  traefik:
+    image: docker.io/library/traefik:v3.6
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=ops@example.com
+      - --certificatesresolvers.le.acme.storage=/acme/acme.json
+    ports: ["443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - acme:/acme
+    networks: [edge]
+
+  fluid-config:
+    build: ../..                      # repository root
+    stop_grace_period: 30s            # longer than shutdown_timeout (15s)
+    env_file: ../../.env
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - dynamic:/app/dynamic
+      - data:/app/data
+    networks: [edge]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.apis.rule=Host(`config.example.com`)
+      - traefik.http.routers.apis.entrypoints=websecure
+      - traefik.http.routers.apis.tls.certresolver=le
+      - traefik.http.routers.apis.service=apis
+      - traefik.http.services.apis.loadbalancer.server.port=8090
+      - traefik.http.routers.console.rule=Host(`example.com`) && PathPrefix(`/config-admin`)
+      - traefik.http.routers.console.entrypoints=websecure
+      - traefik.http.routers.console.tls.certresolver=le
+      - traefik.http.routers.console.middlewares=console-strip,console-ip
+      - traefik.http.routers.console.service=console
+      - traefik.http.middlewares.console-strip.stripprefix.prefixes=/config-admin
+      - traefik.http.middlewares.console-ip.ipallowlist.sourcerange=10.0.0.0/8
+      - traefik.http.services.console.loadbalancer.server.port=9090
+
+volumes: { acme: {}, dynamic: {}, data: {} }
+networks:
+  edge:
+    ipam: { config: [{ subnet: 172.31.0.0/24 }] }

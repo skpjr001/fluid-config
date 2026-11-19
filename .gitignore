@@ -1,3 +1,14 @@
-fluid-config
-config.json
+# Local config, runtime state and secrets (examples live in examples/)
+/config.json
 .env
+/dynamic/
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Build output
+/fluid-config
+/dist/
+/build/
+*.exe

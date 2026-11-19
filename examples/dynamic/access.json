@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/skpjr001/fluid-config/main/schema/access.schema.json",
+  "admin": {
+    "allow": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+  },
+  "catalog": {
+    "allow": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+  }
+}

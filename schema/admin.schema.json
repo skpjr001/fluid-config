@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/skpjr001/fluid-config/main/schema/admin.schema.json",
+  "title": "fluid-config console tokens",
+  "description": "<dynamic_dir>/admin.json \u2014 tokens for the console and admin API. Never editable over the API. The FLUID_ADMIN_TOKEN environment variable (16+ characters) adds an editor token named env.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path or URL of the JSON Schema for editor validation."
+    },
+    "tokens": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "token",
+          "role"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "description": "Shown in logs and the change history."
+          },
+          "token": {
+            "type": "string",
+            "minLength": 16,
+            "description": "Bearer token (generate with: openssl rand -hex 32)."
+          },
+          "role": {
+            "enum": [
+              "viewer",
+              "editor"
+            ],
+            "description": "viewer: read everything, secrets masked. editor: also create and change APIs and records, revert changes, purge caches."
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "tokens"
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://raw.githubusercontent.com/skpjr001/fluid-config/main/schema/api.schema.json",
+  "name": "holidays",
+  "version": "v1",
+  "description": "NSE/BSE trading holidays",
+  "methods": [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE"
+  ],
+  "auth": {
+    "type": "bearer",
+    "tokens": [
+      "ops=env:HOLIDAYS_TOKEN"
+    ],
+    "read_public": true
+  },
+  "allowed_ips": [
+    "*"
+  ],
+  "rate_limit": {
+    "requests_per_minute": 600,
+    "burst": 100
+  },
+  "cache_seconds": 300,
+  "cache": {
+    "enabled": true,
+    "ttl_seconds": 300,
+    "max_entries": 500
+  },
+  "cors_origins": [
+    "https://www.arihantcapital.com"
+  ],
+  "strict_fields": true,
+  "fields": {
+    "date": {
+      "type": "string",
+      "format": "date",
+      "required": true
+    },
+    "exchange": {
+      "type": "string",
+      "enum": [
+        "NSE",
+        "BSE",
+        "MCX"
+      ],
+      "required": true
+    },
+    "segment": {
+      "type": "string",
+      "enum": [
+        "EQ",
+        "FO",
+        "CD",
+        "COM"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "min": 2,
+      "max": 120,
+      "required": true
+    }
+  },
+  "data": [
+    {
+      "id": 1,
+      "date": "2026-01-26",
+      "exchange": "NSE",
+      "segment": "EQ",
+      "reason": "Republic Day"
+    },
+    {
+      "id": 2,
+      "date": "2026-03-03",
+      "exchange": "NSE",
+      "segment": "EQ",
+      "reason": "Holi"
+    },
+    {
+      "id": 3,
+      "date": "2026-08-15",
+      "exchange": "BSE",
+      "segment": "EQ",
+      "reason": "Independence Day"
+    },
+    {
+      "id": 4,
+      "date": "2026-10-02",
+      "exchange": "MCX",
+      "segment": "COM",
+      "reason": "Gandhi Jayanti"
+    }
+  ]
+}

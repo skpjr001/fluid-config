@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector)
+        run: go test -race -count=1 ./...
+
+      - name: UI script syntax
+        run: node --check ui/app.js
+
+      - name: Installer lint
+        run: bash -n deploy/install.sh && shellcheck -S warning deploy/install.sh
+
+      - name: Example configs validate
+        env:
+          HOLIDAYS_TOKEN: ci-example-token
+        run: |
+          mkdir -p /tmp/fc && sed 's#"./dynamic"#"'"$PWD"'/examples/dynamic"#' config.example.json > /tmp/fc/config.json
+          go run . check -config /tmp/fc/config.json
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -trimpath -o fluid-config .
+
+  container:
+    # The image as users run it: first start with nothing mounted, an API
+    # call, a write through the console, and a graceful stop.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build --build-arg VERSION=ci -t fluid-config:ci .
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          docker run -d --name fc -p 127.0.0.1:8090:8090 -p 127.0.0.1:9090:9090 fluid-config:ci
+          for i in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' fc)" = healthy ] && break; sleep 1; done
+          docker inspect -f '{{.State.Health.Status}}' fc | grep -qx healthy
+          # Docker publishes ports from the bridge gateway (a private address): the restricted default lets it in
+          curl -fsS http://127.0.0.1:8090/v1/example | grep -q 'first record'
+          TOKEN=$(docker exec fc /fluid-config token -config /app/config.json | awk '$1=="editor"{print $3; exit}')
+          curl -fsS -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:9090/api/apis/v1/example/records \
+            -d '{"name":"from ci","active":false}' | grep -q '"from ci"'
+          curl -fsS http://127.0.0.1:8090/v1/example?q=from | grep -q '"total":1'
+          curl -fsS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:9090/api/audit?api=v1/example" | grep -q '"action":"create"'
+          curl -fsS http://127.0.0.1:9090/ | grep -q 'fluid-config console'
+          docker exec fc /fluid-config check -config /app/config.json
+          start=$(date +%s); docker stop -t 30 fc; took=$(( $(date +%s) - start ))
+          docker logs fc 2>&1 | grep -q '"shutdown complete"'
+          [ "$took" -lt 10 ] || { echo "stop took ${took}s"; exit 1; }
+      - name: Container logs
+        if: failure()
+        run: docker logs fc || true

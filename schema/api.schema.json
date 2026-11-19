@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/skpjr001/fluid-config/main/schema/api.schema.json",
+  "title": "fluid-config API file",
+  "description": "<dynamic_dir>/apis/**/*.json — one file is one REST API at /<version>/<name>: its contract, who may call it, and its records (data). Writes through the API or console rewrite this file atomically.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "version"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path or URL of the JSON Schema for editor validation."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "description": "URL segment: /<version>/<name>."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]+[a-z0-9.-]{0,15}$",
+      "description": "v1, v2, v1-beta …"
+    },
+    "description": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "false: the API answers 404 (the file is kept)."
+    },
+    "id_field": {
+      "type": "string",
+      "default": "id",
+      "description": "Field that identifies a record (in /<version>/<name>/{id}). Numeric ids are generated as max+1 when omitted on create, others as random hex."
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE"
+        ]
+      },
+      "uniqueItems": true,
+      "default": [
+        "GET"
+      ],
+      "description": "Allowed methods; others get 405. Default read-only."
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "description": "Credentials callers must send.",
+      "properties": {
+        "type": {
+          "enum": [
+            "none",
+            "bearer",
+            "api_key",
+            "basic"
+          ]
+        },
+        "header": {
+          "type": "string",
+          "default": "X-API-Key",
+          "description": "api_key: the header carrying the key."
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "bearer / api_key. Each is \"env:VAR\" (read from the environment), \"sha256:<hex>\" (only the hash is stored) or a literal. Prefix env: and sha256: values with \"name=\" to name the credential in logs and the history (e.g. \"ci-bot=env:CI_TOKEN\")."
+        },
+        "users": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "basic: user -> password (literal, env:VAR or sha256:<hex>)."
+        },
+        "read_public": {
+          "type": "boolean",
+          "description": "GET needs no credentials; writes still do."
+        }
+      }
+    },
+    "allowed_ips": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "\"*\" (everyone), an IP (203.0.113.7, 2001:db8::1), a CIDR (10.0.0.0/8, 2001:db8::/32), or an IPv4 wildcard: \"*\" or a-b per octet (10.0.*.*, 10.*, 192.168.1-5.*)."
+      },
+      "description": "Who may call this API. Omitted: loopback and private networks only (restricted default), so internet clients get 403. [\"*\"]: anyone (pair it with auth)."
+    },
+    "cidrs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "\"*\" (everyone), an IP (203.0.113.7, 2001:db8::1), a CIDR (10.0.0.0/8, 2001:db8::/32), or an IPv4 wildcard: \"*\" or a-b per octet (10.0.*.*, 10.*, 192.168.1-5.*)."
+      },
+      "description": "Same as allowed_ips (kept from the first release); both lists are combined."
+    },
+    "rate_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requests_per_minute",
+        "burst"
+      ],
+      "description": "Token bucket per client IP (429 with Retry-After beyond it).",
+      "properties": {
+        "requests_per_minute": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "burst": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "rate_limit_per_min": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Older form of rate_limit (burst = the same number)."
+    },
+    "cache_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Cache-Control max-age clients and CDNs may keep answers for. ETag and 304 Not Modified are always on."
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "description": "In-memory response cache on the server: GET responses are kept per query until ttl_seconds pass or the data changes (any write or edit of this file). Purge it from the console.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400,
+          "default": 60
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "default": 500,
+          "description": "Distinct queries kept; least recently used are dropped."
+        }
+      }
+    },
+    "cors_origins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Browser origins allowed to call it (https://app.example.com) or \"*\"."
+    },
+    "strict_fields": {
+      "type": "boolean",
+      "description": "Refuse fields not declared in fields."
+    },
+    "max_records": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Refuse creates beyond this many records (0 = no limit)."
+    },
+    "fields": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/field"
+      },
+      "description": "Validation for record fields."
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "description": "The records. Each must carry the id_field and pass the fields' rules."
+    }
+  },
+  "$defs": {
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "number",
+            "integer",
+            "boolean",
+            "object",
+            "array",
+            "any"
+          ],
+          "default": "any"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Must be present (and not null) on create and replace."
+        },
+        "description": {
+          "type": "string"
+        },
+        "enum": {
+          "type": "array",
+          "description": "Allowed values."
+        },
+        "min": {
+          "type": "number",
+          "description": "Minimum value for numbers, minimum length for strings."
+        },
+        "max": {
+          "type": "number",
+          "description": "Maximum value for numbers, maximum length for strings."
+        },
+        "pattern": {
+          "type": "string",
+          "format": "regex",
+          "description": "Regular expression (Go RE2) strings must match."
+        },
+        "format": {
+          "enum": [
+            "date",
+            "date-time",
+            "email",
+            "uri"
+          ],
+          "description": "date = YYYY-MM-DD, date-time = RFC 3339."
+        }
+      }
+    }
+  }
+}

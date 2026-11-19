@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/skpjr001/fluid-config/main/schema/access.schema.json",
+  "title": "fluid-config access allowlists",
+  "description": "<dynamic_dir>/access.json \u2014 which client addresses may use the console and the API catalog. Each API carries its own allowed_ips. An omitted section means the restricted default (loopback and private networks: 127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7); \"allow\": [] refuses everyone; [\"*\"] allows everyone. Behind a reverse proxy, list it in trusted_proxies so the real client address is checked.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path or URL of the JSON Schema for editor validation."
+    },
+    "admin": {
+      "$ref": "#/$defs/list",
+      "description": "Console, admin API and /metrics. File-only: the API never changes it."
+    },
+    "catalog": {
+      "$ref": "#/$defs/list",
+      "description": "GET /_catalog and /openapi.json on the API listener."
+    }
+  },
+  "$defs": {
+    "list": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "\"*\" (everyone), an IP (203.0.113.7, 2001:db8::1), a CIDR (10.0.0.0/8, 2001:db8::/32), or an IPv4 wildcard: \"*\" or a-b per octet (10.0.*.*, 10.*, 192.168.1-5.*)."
+          },
+          "description": "Allowed client addresses. Omitted: loopback + private networks. []: nobody."
+        }
+      }
+    }
+  }
+}

@@ -7,9 +7,9 @@ import (
 
 // openAPI builds an OpenAPI 3.0 document from every enabled spec, so the
 // generated APIs show up in Swagger UI / Postman / client generators.
-func (s *Server) openAPI(r *http.Request) map[string]any {
+func (app *App) openAPI(r *http.Request, basePath string) map[string]any {
 	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	if r.TLS != nil || (len(app.cfg.trusted) > 0 && prefixesContain(app.cfg.trusted, peerAddr(r)) && r.Header.Get("X-Forwarded-Proto") == "https") {
 		scheme = "https"
 	}
 	paths := map[string]any{}
@@ -20,7 +20,7 @@ func (s *Server) openAPI(r *http.Request) map[string]any {
 		"error": map[string]any{"type": "object", "properties": map[string]any{
 			"code": map[string]any{"type": "integer"}, "message": map[string]any{"type": "string"}}}}}
 
-	for _, a := range s.store.All() {
+	for _, a := range app.store.All() {
 		if !a.enabled() {
 			continue
 		}
@@ -65,6 +65,8 @@ func (s *Server) openAPI(r *http.Request) map[string]any {
 			listParams = append(listParams, qp(name, "filter; also "+name+"[gt|gte|lt|lte|ne|like|in|exists]"))
 		}
 		idParam := []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}}
+		ifMatch := append([]any{map[string]any{"name": "If-Match", "in": "header", "required": false,
+			"description": "the record's ETag from GET: the write fails with 412 if someone changed it since", "schema": map[string]any{"type": "string"}}}, idParam...)
 
 		col, item := map[string]any{}, map[string]any{}
 		if a.allows("GET") {
@@ -75,15 +77,15 @@ func (s *Server) openAPI(r *http.Request) map[string]any {
 			col["post"] = op("POST", "Create "+a.Name, nil, true, "201", one)
 		}
 		if a.allows("PUT") {
-			item["put"] = op("PUT", "Replace / upsert "+a.Name, idParam, true, "200", one)
+			item["put"] = op("PUT", "Replace / upsert "+a.Name, ifMatch, true, "200", one)
 		}
 		if a.allows("PATCH") {
-			item["patch"] = op("PATCH", "Merge-patch "+a.Name+" (null removes a field)", idParam, true, "200", one)
+			item["patch"] = op("PATCH", "Merge-patch "+a.Name+" (null removes a field)", ifMatch, true, "200", one)
 		}
 		if a.allows("DELETE") {
-			item["delete"] = op("DELETE", "Delete "+a.Name, idParam, false, "204", nil)
+			item["delete"] = op("DELETE", "Delete "+a.Name, ifMatch, false, "204", nil)
 		}
-		base := s.cfg.BasePath + a.basePath()
+		base := basePath + a.basePath()
 		if len(col) > 0 {
 			col["description"] = a.Description
 			paths[base] = col
@@ -94,7 +96,7 @@ func (s *Server) openAPI(r *http.Request) map[string]any {
 	}
 	return map[string]any{
 		"openapi": "3.0.3",
-		"info":    map[string]any{"title": "fluid-config", "version": "1"},
+		"info":    map[string]any{"title": "fluid-config", "version": version, "description": "REST APIs generated from the API files in " + app.cfg.DynamicDir + "/apis"},
 		"servers": []any{map[string]any{"url": scheme + "://" + r.Host}},
 		"paths":   paths,
 		"components": map[string]any{

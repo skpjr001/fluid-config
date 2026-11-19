@@ -1,0 +1,60 @@
+# /etc/systemd/system/fluid-config.service
+#   sudo useradd -r -s /usr/sbin/nologin -d /var/lib/fluid-config fluidcfg
+#   sudo install -m 755 fluid-config /usr/local/bin/
+#   sudo systemctl enable --now fluid-config
+#
+# systemd creates /var/lib/fluid-config (StateDirectory, owned by fluidcfg) and
+# fluid-config creates everything inside it on first start:
+#   /var/lib/fluid-config/config.json      static config with every default spelled out
+#   /var/lib/fluid-config/dynamic/         apis/ (with an example), admin.json (generated editor token), access.json
+#   /var/lib/fluid-config/data/            SQLite request logs and change history (and acme/ certificate cache)
+# Sign in with the token from: sudo -u fluidcfg fluid-config token -config /var/lib/fluid-config/config.json
+[Unit]
+Description=fluid-config (file-backed REST APIs with a console)
+Documentation=https://github.com/skpjr001/fluid-config
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fluidcfg
+Group=fluidcfg
+StateDirectory=fluid-config
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/fluid-config
+# init creates anything missing and refuses to start on invalid config files.
+ExecStartPre=/usr/local/bin/fluid-config init -config /var/lib/fluid-config/config.json
+ExecStart=/usr/local/bin/fluid-config serve -config /var/lib/fluid-config/config.json
+# Secrets for env: tokens in API files (HOLIDAYS_TOKEN=...) and an optional
+# FLUID_ADMIN_TOKEN editor token (with it set, the generated admin.json holds no token):
+# EnvironmentFile=-/etc/fluid-config/fluid-config.env
+Restart=always
+RestartSec=3
+# Graceful shutdown: SIGTERM, then up to shutdown_timeout (15s) for in-flight requests and writes.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+LimitNOFILE=65536
+
+# Hardening: fluid-config only writes to its StateDirectory (config, API edits, database).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+# Built-in TLS on :443/:80 (api_tls / acme.http_challenge_addr)? Replace the line above with:
+# CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
