@@ -18,7 +18,7 @@ The installer works on Ubuntu, Debian, Fedora, RHEL, Rocky, Alma, Amazon Linux, 
 1. **Checks the system:** architecture, memory, free disk, package manager, systemd, and access to GitHub.
 2. **Installs Docker** Engine and the Compose plugin from Docker's official repositories when they are missing, and starts Docker. Without systemd it starts `dockerd` directly. Go is optional and not needed.
 3. **Downloads the release** binary, verifies its SHA-256 against `checksums.txt`, and builds a small distroless image from it. With `--source` it builds from the git repository instead.
-4. **Asks about storage:** Docker volumes (default), or host directories that you can edit with any editor and back up with the host.
+4. **Asks about storage:** Docker volumes (default), or host directories that you can edit with any editor and back up with the host. Host directories default to `/fluid/config/dynamic` and `/fluid/config/data`. The installer creates them if they are missing and gives them to the container's user (uid 65532, mode 0750), including files already inside, on every run. `/fluid/config` itself stays root-owned (0755).
 5. **Asks about each listener separately**, the APIs (8090) and the console (9090). **Neither is exposed by default.** A bare port binds `127.0.0.1`; use `0.0.0.0:PORT` for all interfaces.
 6. **Asks for an optional console allowlist** and writes it to `access.json`.
 7. **Writes files** to `/opt/fluid-config`: `docker-compose.yml`, `config.json` and a `.env` (0600) for the secrets that `env:` tokens in API files read. Then it starts the container and waits until it is healthy.
@@ -29,7 +29,7 @@ Re-running it upgrades in place, keeping the config, data and your earlier answe
 |---|---|
 | `--version v0.2.0` | a specific release (default: latest) |
 | `--source` | build from git instead of the release binary |
-| `--storage volume\|bind`, `--data-path DIR` | where data lives |
+| `--storage volume\|bind`, `--data-path DIR` | where data lives (`bind` default: `/fluid/config`) |
 | `--expose-api no\|PORT\|IP:PORT` | publish the APIs |
 | `--expose-ui no\|PORT\|IP:PORT` | publish the console |
 | `--allow-ui LIST` | console allowlist (IPs, CIDRs, `10.0.*.*` wildcards) |
