@@ -1,0 +1,4 @@
+{
+  "$schema": "../../../schema/admin.schema.json",
+  "tokens": [{"name": "e2e", "token": "e2e-viewer-token-0123456789", "role": "viewer"}]
+}

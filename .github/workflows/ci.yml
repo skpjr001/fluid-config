@@ -76,3 +76,13 @@ jobs:
       - name: Container logs
         if: failure()
         run: docker logs fc || true
+
+  e2e:
+    # fluid-config behind real nginx, Traefik and Caddy (subdomain, path with
+    # and without prefix stripping, console under a path, real client
+    # addresses), built-in TLS, ACME against Pebble, and a first start.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: End-to-end behind reverse proxies
+        run: ./deploy/e2e/test.sh

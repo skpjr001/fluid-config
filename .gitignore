@@ -12,3 +12,6 @@
 /dist/
 /build/
 *.exe
+
+# e2e test certificates (created and removed by deploy/e2e/test.sh)
+/deploy/e2e/.certs/

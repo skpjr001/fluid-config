@@ -1,0 +1,9 @@
+{
+  "$schema": "../../../../schema/api.schema.json",
+  "name": "wild",
+  "version": "v1",
+  "description": "An octet range lets in the caller 172.34.0.50",
+  "methods": ["GET"],
+  "allowed_ips": ["172.34.0.40-60"],
+  "data": [{"id": 1, "name": "partner"}]
+}

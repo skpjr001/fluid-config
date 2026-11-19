@@ -241,14 +241,17 @@ See [deploy/README.md](deploy/README.md) for the following:
 - the VM installer;
 - systemd;
 - Docker and Compose;
-- Traefik and nginx in front (TLS, console under a path, real client addresses);
+- Traefik, nginx and Caddy in front (TLS, console under a path, real client addresses);
 - built-in TLS and ACME;
 - the deployment notes fluid-config prints for each setup.
+
+Every one of these layouts is covered by an end-to-end test behind the real proxies (also run in CI).
 
 ## Development
 
 ```bash
 go test -race ./...         # unit and integration tests
+./deploy/e2e/test.sh        # behind real nginx, Traefik and Caddy, plus TLS and ACME (Docker or Podman)
 go vet ./... && gofmt -l .
 node --check ui/app.js
 ```

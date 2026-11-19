@@ -1,0 +1,10 @@
+{
+  "$schema": "../../../schema/config.schema.json",
+  "api_addr": ":8443",
+  "admin_addr": "127.0.0.1:9090",
+  "dynamic_dir": "/app/dynamic",
+  "api_tls": {"acme": {"domains": ["acme-http.test"], "email": "ops@example.com", "accept_tos": true,
+    "directory_url": "https://pebble:14000/dir", "ca_file": "/certs/pebble.minica.pem", "cache_dir": "/app/data/acme",
+    "http_challenge_addr": ":80"}},
+  "database": {"path": "/app/data/http.db", "retention_days": 1, "log_level": "info"}
+}

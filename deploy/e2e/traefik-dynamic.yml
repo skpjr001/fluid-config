@@ -1,0 +1,13 @@
+# Same routing as deploy/traefik/compose.yml labels, as a file provider, on plain HTTP.
+# Here the APIs under /config are stripped too (nginx and Caddy keep the prefix).
+http:
+  routers:
+    apis:     { rule: "Host(`config.test`)", entryPoints: [web], service: apis }
+    apispath: { rule: "Host(`example.test`) && PathPrefix(`/config/`)", entryPoints: [web], service: apis, middlewares: [apis-strip] }
+    console:  { rule: "Host(`example.test`) && PathPrefix(`/config-admin`)", entryPoints: [web], service: console, middlewares: [console-strip] }
+  middlewares:
+    apis-strip:    { stripPrefix: { prefixes: ["/config"] } }
+    console-strip: { stripPrefix: { prefixes: ["/config-admin"] } }
+  services:
+    apis:    { loadBalancer: { servers: [{ url: "http://app:8090" }] } }
+    console: { loadBalancer: { servers: [{ url: "http://app:9090" }] } }

@@ -1,0 +1,23 @@
+# Caddy in front of fluid-config (automatic HTTPS).
+#   https://config.example.com/...      -> the APIs (subdomain)
+#   https://example.com/config-admin/   -> console (path, prefix stripped by handle_path)
+# fluid-config config.json: "trusted_proxies": ["127.0.0.1"]
+# so allowed_ips, rate limits and logs see the real client address.
+
+config.example.com {
+	reverse_proxy 127.0.0.1:8090
+}
+
+example.com {
+	handle_path /config-admin/* {
+		@office remote_ip 10.0.0.0/8 # office / VPN
+		handle @office {
+			reverse_proxy 127.0.0.1:9090 {
+				header_up X-Forwarded-Prefix /config-admin
+				flush_interval -1 # live updates (Server-Sent Events)
+			}
+		}
+		respond 403
+	}
+	redir /config-admin /config-admin/
+}

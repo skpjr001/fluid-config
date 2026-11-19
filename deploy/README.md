@@ -87,7 +87,23 @@ List the proxy in `trusted_proxies`, so allowlists, rate limits and logs use the
 
 - **Traefik:** [`traefik/compose.yml`](traefik/compose.yml) serves the APIs on a subdomain and the console under `/config-admin` with `StripPrefix`. The console follows `X-Forwarded-Prefix` from trusted proxies, or set `admin_base_path`.
 - **nginx:** [`nginx/fluid-config.conf`](nginx/fluid-config.conf) has the APIs at the root and the console under `/config-admin/`, with buffering off for live updates.
+- **Caddy:** [`caddy/Caddyfile`](caddy/Caddyfile) serves the APIs on a subdomain and the console under `/config-admin` with `handle_path`. Caddy does not send `X-Forwarded-Prefix` by itself, so the example adds it with `header_up` (or set `admin_base_path`), and `flush_interval -1` keeps live updates flowing.
 - **Base paths:** with `api_base_path: "/config"` the APIs answer at `/config/v1/...`, and also without the prefix, so the proxy may strip it or not. `Location` headers and the OpenAPI document use the prefix.
+
+## End-to-end test
+
+[`e2e/test.sh`](e2e/test.sh) starts fluid-config with Docker Compose and checks every layout above against real proxies (also in CI):
+
+- **nginx, Traefik and Caddy** with the same routing as the examples: the APIs on a subdomain root and under `/config` (with and without prefix stripping), and the console, its API and live updates under `/config-admin`. Each proxy also gets a write with a token, the `Location` header, a cache hit and the change history.
+- **The real client address:** a caller on a network that only the proxies join must be refused by an API with the restricted default, let in by an octet range, and logged with its own address, never the proxy's.
+- **Built-in TLS** with certificate files (HTTP/2, TLS 1.3 on the console, a read-only `dynamic/` that answers 409), and **ACME** against [Pebble](https://github.com/letsencrypt/pebble) with TLS-ALPN-01 and HTTP-01.
+- **A first start with nothing mounted:** the files it creates, the token never logged, the restricted default for public callers, and a restart that creates nothing.
+- **The deployment notes** each setup logs.
+
+```bash
+./deploy/e2e/test.sh
+DOCKER_HOST=unix:///run/user/$UID/podman/podman.sock ./deploy/e2e/test.sh   # with Podman
+```
 
 ## Built-in TLS
 

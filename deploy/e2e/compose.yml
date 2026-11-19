@@ -1,0 +1,113 @@
+# End-to-end test: fluid-config behind nginx, Traefik and Caddy, with
+# built-in TLS, ACME (Pebble) and a first start with nothing mounted.
+#   ./deploy/e2e/test.sh
+name: fluid-config-e2e
+
+x-env: &env
+  E2E_API_TOKEN: e2e-api-token-0123456789
+
+services:
+  # Copies the test API files into a writable volume owned by the image's
+  # user (65532), the way a real deployment keeps dynamic/ on a volume.
+  seed:
+    image: docker.io/library/nginx:alpine
+    entrypoint: ["sh", "-c", "cp -R /seed/. /app/dynamic/ && chown -R 65532:65532 /app/dynamic && chmod 600 /app/dynamic/admin.json"]
+    volumes:
+      - ./dynamic:/seed:ro
+      - dynamic:/app/dynamic
+    networks: { e2e: {} }
+  app:
+    build: ../..
+    environment: *env
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - dynamic:/app/dynamic
+    depends_on: { seed: { condition: service_completed_successfully } }
+    networks: { e2e: { ipv4_address: 172.30.0.10 } }
+  nginx:
+    image: docker.io/library/nginx:alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./fluid-proxy.conf:/etc/nginx/fluid-proxy.conf:ro
+    ports: ["127.0.0.1:28090:80"]
+    depends_on: [app]
+    networks: { e2e: {}, public: {} }
+  traefik:
+    image: docker.io/library/traefik:latest
+    command:
+      - --entrypoints.web.address=:80
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+    volumes:
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+    ports: ["127.0.0.1:38090:80"]
+    depends_on: [app]
+    networks: { e2e: {}, public: {} }
+  caddy:
+    image: docker.io/library/caddy:latest
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports: ["127.0.0.1:48090:80"]
+    depends_on: [app]
+    networks: { e2e: {}, public: {} }
+  # A caller on a network only the proxies join: its address must be what
+  # fluid-config sees and logs, never a proxy's address.
+  client:
+    image: docker.io/curlimages/curl:latest
+    command: ["sleep", "3600"]
+    networks: { public: { ipv4_address: 172.34.0.50 } }
+
+  # ---- built-in TLS, no reverse proxy; dynamic/ mounted read-only ----
+  app-tls:
+    build: ../..
+    environment: *env
+    volumes:
+      - ./tls/app-tls.json:/app/config.json:ro
+      - ./dynamic:/app/dynamic:ro
+      - ./.certs:/certs:ro
+    ports: ["127.0.0.1:58090:8090", "127.0.0.1:59090:9090"]
+    networks: { e2e: { aliases: [tls.test] } }
+
+  # ---- ACME against Pebble (Let's Encrypt's test CA) ----
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    command: ["-config", "/test/config/e2e.json"]
+    environment: { PEBBLE_VA_NOSLEEP: "1", PEBBLE_WFE_NONCEREJECT: "0" }
+    volumes: ["./tls/pebble-config.json:/test/config/e2e.json:ro"]
+    networks: { e2e: {} }
+  app-acme-alpn:            # :443 -> TLS-ALPN-01
+    build: ../..
+    environment: *env
+    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }
+    volumes:
+      - ./tls/app-acme-alpn.json:/app/config.json:ro
+      - ./dynamic:/app/dynamic:ro
+      - ./.certs:/certs:ro
+    depends_on: [pebble]
+    networks: { e2e: { aliases: [acme-alpn.test] } }
+  app-acme-http:            # :8443 + :80 challenge listener -> HTTP-01
+    build: ../..
+    environment: *env
+    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }
+    volumes:
+      - ./tls/app-acme-http.json:/app/config.json:ro
+      - ./dynamic:/app/dynamic:ro
+      - ./.certs:/certs:ro
+    depends_on: [pebble]
+    networks: { e2e: { aliases: [acme-http.test] } }
+
+  # ---- first start with nothing mounted: fluid-config creates its own files ----
+  app-fresh:
+    build: ../..
+    networks: { e2e: {}, public: {} }   # public: the restricted default must refuse 172.34.0.50
+  tester:                   # runs checks from inside the private network
+    image: docker.io/curlimages/curl:latest
+    command: ["sleep", "3600"]
+    networks: { e2e: {} }
+
+volumes:
+  dynamic: {}
+networks:
+  e2e:
+    ipam: { config: [{ subnet: 172.30.0.0/24 }] }
+  public:
+    ipam: { config: [{ subnet: 172.34.0.0/24 }] }

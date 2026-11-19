@@ -1,0 +1,9 @@
+{
+  "$schema": "../../schema/config.schema.json",
+  "api_addr": ":8090",
+  "admin_addr": ":9090",
+  "api_base_path": "/config",
+  "dynamic_dir": "/app/dynamic",
+  "trusted_proxies": ["172.30.0.0/24"],
+  "database": {"path": "/app/data/e2e.db", "retention_days": 1, "log_level": "info"}
+}

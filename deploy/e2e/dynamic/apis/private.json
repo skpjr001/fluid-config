@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../../schema/api.schema.json",
+  "name": "private",
+  "version": "v1",
+  "description": "No allowed_ips: the restricted default (loopback and private networks)",
+  "methods": ["GET"],
+  "data": [{"id": 1, "name": "internal"}]
+}

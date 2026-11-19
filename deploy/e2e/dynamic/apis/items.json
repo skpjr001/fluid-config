@@ -1,0 +1,12 @@
+{
+  "$schema": "../../../../schema/api.schema.json",
+  "name": "items",
+  "version": "v1",
+  "description": "Public reads, token writes, cached",
+  "methods": ["GET", "POST", "PATCH", "DELETE"],
+  "auth": {"type": "bearer", "tokens": ["e2e=env:E2E_API_TOKEN"], "read_public": true},
+  "allowed_ips": ["*"],
+  "cache": {"enabled": true, "ttl_seconds": 60},
+  "fields": {"name": {"type": "string", "required": true}},
+  "data": [{"id": 1, "name": "first"}]
+}

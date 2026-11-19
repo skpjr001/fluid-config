@@ -1,0 +1,5 @@
+{
+  "$schema": "../../../schema/access.schema.json",
+  "admin": {"allow": ["*"]},
+  "catalog": {"allow": ["*"]}
+}

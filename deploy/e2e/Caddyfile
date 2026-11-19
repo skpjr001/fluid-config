@@ -1,0 +1,18 @@
+# Same routing as deploy/caddy/Caddyfile, on plain HTTP for testing.
+{
+	auto_https off
+}
+http://config.test {
+	reverse_proxy app:8090
+}
+http://example.test {
+	handle_path /config-admin/* {
+		reverse_proxy app:9090 {
+			header_up X-Forwarded-Prefix /config-admin
+			flush_interval -1
+		}
+	}
+	handle /config/* {
+		reverse_proxy app:8090 # no stripping
+	}
+}
