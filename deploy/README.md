@@ -43,7 +43,10 @@ Afterwards:
 sudo docker exec fluid-config /fluid-config token -config /app/config.json    # console tokens
 sudo docker exec fluid-config /fluid-config check -config /app/config.json    # validate + notes
 sudo docker exec fluid-config /fluid-config logs -config /app/config.json -since 1h
+sudo docker run --rm --network container:fluid-config curlimages/curl -s http://127.0.0.1:8090/v1/example   # curl from fluid-config's network
 ```
+
+The image has no shell or curl (distroless), so the last line runs curl in a throwaway container that shares fluid-config's network. See [Debugging inside a container](../README.md#debugging-inside-a-container).
 
 > **Docker and allowlists.** With Docker's default userland proxy, clients that reach a published port can appear to come from the bridge gateway (`172.17.0.1`). That is a *private* address, so an API without `allowed_ips` (the restricted default) lets them in. If the APIs are published beyond localhost, give every API file explicit `allowed_ips` and auth. Better, put a reverse proxy in front and list it in `trusted_proxies`. Check `source_ip` in the request logs to see what fluid-config sees.
 

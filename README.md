@@ -12,8 +12,8 @@ It runs two listeners:
 
 | Listener | Default | Purpose |
 |---|---|---|
-| API | `:8090` | The generated REST APIs: list with filters, search, sort and paging; get; create; replace; merge-patch; delete. Per-API auth (bearer, API key, basic), **IP allowlists with wildcards**, rate limits, CORS, ETags, `If-Match`, and an optional **in-memory response cache**. Also `/_catalog` and `/openapi.json`. |
-| Console | `127.0.0.1:9090` | Web console and admin API: create APIs and edit their contracts, browse/edit/import records, per-record **history with revert**, request logs with full request/response capture, cache stats and **purge**, access tester, deployment notes, Prometheus `/metrics`, OpenTelemetry traces. **Viewer** and **editor** tokens. |
+| API | `:8090` | The generated REST APIs: list with filters, search, sort and paging; get; create; replace; merge-patch; delete. Per-API auth (bearer, API key, basic), **IP allowlists with wildcards**, rate limits, CORS, ETags, `If-Match`, and an optional **in-memory response cache**. Also `/_catalog` and `/openapi.json`. Optional OpenTelemetry traces for every request. |
+| Console | `127.0.0.1:9090` | Web console and admin API: create APIs and edit their contracts, browse/edit/import records, per-record **history with revert**, request logs with full request/response capture, cache stats and **purge**, access tester, deployment notes, Prometheus `/metrics`. **Viewer** and **editor** tokens. |
 
 API files are hot-reloaded and validated against published [JSON Schemas](schema/). Writes through the API or the console go back into the same file, atomically. Request logs and the change history live in one SQLite file.
 
@@ -21,13 +21,13 @@ API files are hot-reloaded and validated against published [JSON Schemas](schema
 
 No setup is needed: on first start fluid-config creates every directory and config file it is missing, including an example API (see [First start](#first-start-what-is-created)).
 
-**On a fresh Linux VM** (Ubuntu, Debian, Fedora, RHEL/Rocky/Alma, Amazon Linux), the installer checks the system, installs Docker if needed and runs fluid-config in a container:
+**On a fresh Linux VM** (Ubuntu, Debian, Fedora, RHEL/Rocky/Alma, Amazon Linux, openSUSE, Alpine), the installer checks the system, installs Docker if needed and runs fluid-config in a container:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/skpjr001/fluid-config/main/deploy/install.sh | sudo bash
 ```
 
-It asks whether to expose the APIs and the console on the host, each separately and **not exposed by default**. It also asks where to keep data (Docker volumes by default, or host directories) and which addresses may use the console. See [deploy/README.md](deploy/README.md#installer-for-a-linux-vm).
+It asks whether to expose the APIs and the console on the host, each separately and **not exposed by default**. It also asks where to keep data (Docker volumes by default, or host directories under `/fluid/config`) and which addresses may use the console. See [deploy/README.md](deploy/README.md#installer-for-a-linux-vm).
 
 **On a host**
 
@@ -59,6 +59,17 @@ docker exec fluid-config /fluid-config token -config /app/config.json
 Keep `/app/dynamic` on a volume: records written through the API live in the API files there. For the Traefik setup in [`compose.yml`](compose.yml): `cp config.docker.json config.json`, `cp example.env .env` and fill in the secrets for `env:` tokens, set the host in `compose.yml`, then `docker compose up -d`.
 
 **Then** open the console (through an SSH tunnel: `ssh -L 9090:127.0.0.1:9090 server`, then <http://localhost:9090>) and sign in with the token. Create an API with **APIs → Create API**, or drop a JSON file in `dynamic/apis/` and it is served within `reload_interval` (2s).
+
+### Debugging inside a container
+
+The image is distroless: it holds only the fluid-config binary, CA certificates and time-zone data, with no shell or curl, so `docker exec fluid-config sh` does not work. That is deliberate, because an intruder finds no tools there. To see what fluid-config sees, run curl in a throwaway container that shares its network:
+
+```bash
+docker run --rm --network container:fluid-config curlimages/curl -s http://127.0.0.1:8090/v1/example
+docker run --rm --network container:fluid-config curlimages/curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9090/api/status
+```
+
+`127.0.0.1` is fluid-config's own loopback, so an API on the restricted default answers too. Other containers resolve by name as they do for fluid-config. Nothing is left behind afterwards. For fluid-config's own view, use `docker exec fluid-config /fluid-config check -config /app/config.json` and `… logs`.
 
 ### First start: what is created
 
@@ -245,6 +256,7 @@ See [deploy/README.md](deploy/README.md) for the following:
 - Docker and Compose;
 - Traefik, nginx and Caddy in front (TLS, console under a path, real client addresses);
 - built-in TLS and ACME;
+- monitoring: Prometheus metrics (requests, latency, cache hits, record changes) and OpenTelemetry traces;
 - the deployment notes fluid-config prints for each setup.
 
 Every one of these layouts is covered by an end-to-end test behind the real proxies (also run in CI).
@@ -259,6 +271,16 @@ node --check ui/app.js
 ```
 
 The console is plain JavaScript embedded in the binary, with no build step. Its strict CSP allows no inline scripts or styles, and all DOM is built with `textContent`. The schemas in [`schema/`](schema) are checked against the Go structs by the tests.
+
+## Releases
+
+Prebuilt binaries for Linux, macOS and Windows (amd64/arm64) are on the [Releases](https://github.com/skpjr001/fluid-config/releases) page, with `checksums.txt`. To cut a release, push a tag (CI builds and publishes it):
+
+```sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+`fluid-config version` prints the version a binary was built from.
 
 ## License
 
