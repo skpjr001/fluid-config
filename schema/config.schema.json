@@ -129,6 +129,37 @@
           "description": "Per body; longer bodies are cut (the full size is recorded). 0 keeps headers only."
         }
       }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "otlp_endpoint": {
+          "type": "string",
+          "description": "OTLP/HTTP base URL, e.g. http://otel-collector:4318 (spans go to <url>/v1/traces). Empty: OTEL_EXPORTER_OTLP_ENDPOINT, else tracing is off."
+        },
+        "service_name": {
+          "type": "string",
+          "minLength": 1,
+          "default": "fluid-config",
+          "description": "service.name resource attribute."
+        },
+        "sample_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1,
+          "description": "Fraction of new traces sampled; a caller's traceparent decides for continued traces."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Headers sent to the collector, e.g. an API key."
+        }
+      },
+      "description": "OpenTelemetry tracing: one span per API request, continuing incoming traceparent headers."
     }
   },
   "$defs": {

@@ -10,7 +10,7 @@ services:
     build: .
     restart: unless-stopped
     stop_grace_period: 30s                  # > shutdown_timeout (15s): in-flight writes finish on docker stop
-    env_file: .env                          # HOLIDAYS_TOKEN=... for env: tokens in API files; optional FLUID_ADMIN_TOKEN
+    env_file: .env                          # cp example.env .env; HOLIDAYS_TOKEN=... for env: tokens in API files; optional FLUID_ADMIN_TOKEN
     volumes:
       - ./config.json:/app/config.json:ro   # cp config.docker.json config.json
       - fluid-dynamic:/app/dynamic          # API files: records written through the API live here

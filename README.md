@@ -13,7 +13,7 @@ It runs two listeners:
 | Listener | Default | Purpose |
 |---|---|---|
 | API | `:8090` | The generated REST APIs: list with filters, search, sort and paging; get; create; replace; merge-patch; delete. Per-API auth (bearer, API key, basic), **IP allowlists with wildcards**, rate limits, CORS, ETags, `If-Match`, and an optional **in-memory response cache**. Also `/_catalog` and `/openapi.json`. |
-| Console | `127.0.0.1:9090` | Web console and admin API: create APIs and edit their contracts, browse/edit/import records, per-record **history with revert**, request logs with full request/response capture, cache stats and **purge**, access tester, deployment notes, Prometheus `/metrics`. **Viewer** and **editor** tokens. |
+| Console | `127.0.0.1:9090` | Web console and admin API: create APIs and edit their contracts, browse/edit/import records, per-record **history with revert**, request logs with full request/response capture, cache stats and **purge**, access tester, deployment notes, Prometheus `/metrics`, OpenTelemetry traces. **Viewer** and **editor** tokens. |
 
 API files are hot-reloaded and validated against published [JSON Schemas](schema/). Writes through the API or the console go back into the same file, atomically. Request logs and the change history live in one SQLite file.
 
@@ -56,7 +56,7 @@ docker run -d --name fluid-config -p 127.0.0.1:8090:8090 -p 127.0.0.1:9090:9090 
 docker exec fluid-config /fluid-config token -config /app/config.json
 ```
 
-Keep `/app/dynamic` on a volume: records written through the API live in the API files there. For the Traefik setup in [`compose.yml`](compose.yml): `cp config.docker.json config.json`, put secrets for `env:` tokens in `.env`, set the host in `compose.yml`, then `docker compose up -d`.
+Keep `/app/dynamic` on a volume: records written through the API live in the API files there. For the Traefik setup in [`compose.yml`](compose.yml): `cp config.docker.json config.json`, `cp example.env .env` and fill in the secrets for `env:` tokens, set the host in `compose.yml`, then `docker compose up -d`.
 
 **Then** open the console (through an SSH tunnel: `ssh -L 9090:127.0.0.1:9090 server`, then <http://localhost:9090>) and sign in with the token. Create an API with **APIs → Create API**, or drop a JSON file in `dynamic/apis/` and it is served within `reload_interval` (2s).
 
@@ -231,6 +231,8 @@ Deleting an API from the console moves its file to `apis/.deleted/`, so you can 
 | `database.retention_days` | 14 | request logs |
 | `database.audit_retention_days` | 365 | change history |
 | `database.capture_payloads`, `capture_max_body_bytes` | `true`, 1 MiB | full request/response capture |
+| `telemetry.otlp_endpoint` | `""` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) | export OpenTelemetry traces over OTLP/HTTP; empty is off |
+| `telemetry.service_name`, `sample_ratio`, `headers` | `fluid-config`, 1, none | trace resource name, share of new traces kept, headers for the collector |
 
 Settings from the first release (`addr`, `apis_dir`, `base_path`, `trust_forwarded_for`, `catalog_token`) are refused with a message naming their replacement.
 

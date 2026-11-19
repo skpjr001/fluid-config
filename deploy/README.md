@@ -63,7 +63,7 @@ The unit sets up the following:
 - `ExecStartPre=fluid-config init`: an invalid file stops the start with a clear message.
 - Hardening: `ProtectSystem=strict`, no capabilities. Uncomment `CAP_NET_BIND_SERVICE` for built-in TLS on 443.
 - `TimeoutStopSec=30s`, longer than `shutdown_timeout`, so in-flight writes finish on `systemctl stop`.
-- Secrets for `env:` tokens: `EnvironmentFile=/etc/fluid-config/fluid-config.env`.
+- Secrets for `env:` tokens: `EnvironmentFile=/etc/fluid-config/fluid-config.env` (start from [`example.env`](../example.env)).
 
 ## Docker and Compose
 
@@ -120,7 +120,10 @@ Certificate files are reloaded when they change. ACME (Let's Encrypt by default;
 - `/livez` and `/readyz` on both listeners. `/readyz` checks the database and fails during shutdown, so set `shutdown_delay` behind load balancers.
 - `GET /metrics` on the console listener (needs a viewer or editor token):
   - counters: `fluid_api_requests_total{api,method,code}`, `fluid_record_changes_total{api}`, `fluid_access_denied_total`, `fluid_rate_limited_total`, `fluid_config_reloads_total`;
+  - `fluid_cache_requests_total{api,result}`: reads of caching APIs, `hit` or `miss`;
+  - histogram: `fluid_api_request_duration_seconds{api}` (1 ms to 5 s buckets);
   - gauges: `fluid_config_errors`, `fluid_apis`, `fluid_cache_bytes`.
+- **Traces:** set `telemetry.otlp_endpoint` (for example `http://otel-collector:4318`), or `OTEL_EXPORTER_OTLP_ENDPOINT`, to send OpenTelemetry spans over OTLP/HTTP. Each API request gets a server span named after the API (`GET v1/holidays`) with its status, client, credential and cache result. An incoming `traceparent` header continues the caller's trace. Each request's log row records the trace id, shown in the console's log view. `telemetry.headers` adds headers for the collector (an API key, for example), and `sample_ratio` keeps that share of new traces. Queued spans are flushed on a graceful stop.
 - Logs are JSON on stdout and stored in SQLite (`fluid-config logs`, or the console). Every API request is logged with its full request and response unless `capture_payloads` is off.
 
 ## Upgrading from the first fluid-config

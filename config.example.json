@@ -19,5 +19,10 @@
     "log_level": "info",
     "capture_payloads": true,
     "capture_max_body_bytes": 1048576
+  },
+  "telemetry": {
+    "otlp_endpoint": "",
+    "service_name": "fluid-config",
+    "sample_ratio": 1
   }
 }

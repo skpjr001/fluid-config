@@ -220,6 +220,10 @@ func (app *App) readyz(w http.ResponseWriter, r *http.Request) {
 // Serve runs both listeners and the background loops until ctx is cancelled.
 func (app *App) Serve(ctx context.Context) error {
 	cfg := app.cfg
+	shutdownTracing, err := setupTracing(ctx, cfg.Telemetry)
+	if err != nil {
+		return fmt.Errorf("telemetry: %w", err)
+	}
 	app.env = detectEnv()
 	app.notes = deploymentNotes(cfg, app.store.snap.Load(), app.env, envAdminToken() != "", time.Now())
 	logDeploymentNotes(app.notes)
@@ -236,6 +240,7 @@ func (app *App) Serve(ctx context.Context) error {
 		cancelBG()
 		close(stopWatch)
 		bgWG.Wait()
+		shutdownTracing(context.Background())
 		return err
 	}
 	errc := make(chan error, len(running))
@@ -257,7 +262,7 @@ func (app *App) Serve(ctx context.Context) error {
 	case err = <-errc:
 		slog.Error("server failed", "kind", "system", "err", err)
 	}
-	app.shutdown(running, stopWatch, cancelBG, &bgWG)
+	app.shutdown(running, stopWatch, cancelBG, &bgWG, shutdownTracing)
 	return err
 }
 
@@ -300,7 +305,8 @@ func (app *App) housekeeping(ctx context.Context) {
 // A write that started always completes or fails as a whole: files are
 // replaced atomically, so a stop never leaves a half-written API file.
 // A second SIGINT/SIGTERM ends the process at once.
-func (app *App) shutdown(running []runningServer, stopWatch chan struct{}, cancelBG context.CancelFunc, bgWG *sync.WaitGroup) {
+func (app *App) shutdown(running []runningServer, stopWatch chan struct{}, cancelBG context.CancelFunc, bgWG *sync.WaitGroup,
+	shutdownTracing func(context.Context) error) {
 	start := time.Now()
 	timeout, delay := app.cfg.ShutdownTimeout.D(), app.cfg.ShutdownDelay.D()
 	app.draining.Store(true)
@@ -334,6 +340,11 @@ func (app *App) shutdown(running []runningServer, stopWatch chan struct{}, cance
 		slog.Warn("shutdown timeout reached: closed remaining connections", "kind", "system", "listeners", n)
 	}
 	slog.Info("shutdown complete", "kind", "system", "took", time.Since(start).Round(time.Millisecond).String())
+	tctx, tcancel := context.WithTimeout(context.Background(), 5*time.Second) // flush queued spans
+	if err := shutdownTracing(tctx); err != nil {
+		slog.Warn("could not flush traces", "kind", "system", "err", err)
+	}
+	tcancel()
 	app.sink.Close()
 	app.db.Close()
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // API serves the generated REST APIs (the api listener).
@@ -91,6 +95,16 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rid := requestID(r)
 	w.Header().Set("X-Request-Id", rid)
+	// One server span per request (not for health probes), continuing the
+	// caller's trace from traceparent; logs of the request carry its trace id.
+	span := trace.SpanFromContext(r.Context())
+	if !isHealthPath(r) {
+		var ctx context.Context
+		ctx, span = tracer.Start(extractTrace(r.Context(), r.Header), r.Method, trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(attribute.String("http.request.method", r.Method), attribute.String("url.path", r.URL.Path),
+				attribute.String("fluid.request_id", rid)))
+		r = r.WithContext(ctx)
+	}
 	rec := &statusRec{ResponseWriter: w}
 	info := &reqInfo{}
 	a.route(rec, r, rid, info)
@@ -100,8 +114,24 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isHealthPath(r) && rec.code == 200 {
 		return // probes would drown the logs
 	}
+	src := ClientIP(r, a.app.cfg.trusted).String()
+	cache := strings.ToLower(rec.Header().Get("X-Cache"))
+	if info.api != "" {
+		span.SetName(r.Method + " " + info.api)
+		span.SetAttributes(attribute.String("fluid.api", info.api))
+	}
+	span.SetAttributes(attribute.String("client.address", src))
+	if info.client != "" {
+		span.SetAttributes(attribute.String("fluid.client", info.client))
+	}
+	if cache != "" {
+		span.SetAttributes(attribute.String("fluid.cache", cache))
+		a.app.metrics.Inc("fluid_cache_requests_total", "api", info.api, "result", cache)
+	}
+	endSpan(span, rec.code, nil)
 	class := strconv.Itoa(rec.code/100) + "xx"
 	a.app.metrics.Inc("fluid_api_requests_total", "api", info.api, "method", r.Method, "code", class)
+	a.app.metrics.Observe("fluid_api_request_duration_seconds", time.Since(start).Seconds(), "api", info.api)
 	level := slog.LevelInfo
 	if rec.code >= 500 {
 		level = slog.LevelError
@@ -115,7 +145,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	slog.Log(r.Context(), level, msg, "kind", "api", "direction", "inbound", "api", info.api, "client", info.client,
 		"method", r.Method, "url", r.URL.RequestURI(), "status", rec.code, "bytes_out", rec.bytes,
 		"bytes_in", max(r.ContentLength, 0), "ms", time.Since(start).Milliseconds(),
-		"source_ip", ClientIP(r, a.app.cfg.trusted).String(), "request_id", rid, "capture", captureFrom(r.Context()))
+		"source_ip", src, "request_id", rid, "capture", captureFrom(r.Context()))
 }
 
 func (a *API) route(w http.ResponseWriter, r *http.Request, rid string, info *reqInfo) {

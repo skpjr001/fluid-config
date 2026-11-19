@@ -211,6 +211,7 @@ func (a *Admin) status(w http.ResponseWriter, r *http.Request) {
 		"cache":        map[string]any{"bytes": a.app.cache.TotalBytes()},
 		"database":     map[string]any{"path": a.app.db.path, "size_bytes": dbSize, "retention_days": a.app.cfg.Database.RetentionDays, "audit_retention_days": a.app.cfg.Database.AuditRetentionDays},
 		"logs_dropped": a.app.sink.Dropped(),
+		"tracing":      otlpEndpoint(a.app.cfg.Telemetry) != "",
 		"environment":  map[string]any{"container": a.app.env.Container, "systemd": a.app.env.Systemd},
 		"deployment":   a.currentNotes(),
 	})

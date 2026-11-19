@@ -846,7 +846,7 @@ async function showLog(l) {
   const meta = props([["Time", fmtDT(l.ts)], ["Credential", l.client || null], ["API", l.route || null], ["Method", l.method || null],
     ["URL", l.url ? h("span", { class: "mono" }, l.url) : null], ["Status", l.status ? httpLozenge(l.status) : null],
     ["Duration", l.duration_ms ? l.duration_ms + " ms" : null], ["Bytes in / out", (l.bytes_in || l.bytes_out) ? bytes(l.bytes_in) + " / " + bytes(l.bytes_out) : null],
-    ["Source IP", l.source_ip || null]]);
+    ["Source IP", l.source_ip || null], ["Trace", l.trace_id ? h("span", { class: "mono" }, l.trace_id) : null]]);
   const payloadEl = h("div", {}, l.has_payload ? h("div", { class: "muted" }, "Loading request and response…") : null);
   openDetail("#" + l.id, l.msg,
     h("div", { class: "toolbar" }, lozenge(l.level, STATUS_KIND[l.level]), h("span", { class: "mono" }, l.kind)),
@@ -1837,6 +1837,7 @@ async function pageSystem() {
       h("div", { class: "panel" }, h("h2", {}, "Runtime"), props([
         ["API listener", h("span", { class: "mono" }, st.listeners.api)], ["Console listener", h("span", { class: "mono" }, st.listeners.admin)],
         ["API URL", h("span", { class: "mono" }, st.api_url)], ["Database", h("span", { class: "mono" }, st.database.path)],
+        ["Tracing", st.tracing ? lozenge("OTLP on", "success") : lozenge("off")],
         ["Signed in as", state.me.name + " (" + state.me.role + ")"]]))),
     h("div", { class: "panel notes" }, h("h2", {}, "Deployment notes"),
       h("p", { class: "help" }, "Checked at startup for this way of running fluid-config (" +
@@ -1849,7 +1850,8 @@ async function pageSystem() {
       try { const r = await api("POST", "/api/reload"); toast(Object.keys(r.errors || {}).length ? "Reloaded with errors" : "Reloaded"); route(); }
       catch (e) { toast(e.message, true); }
     } }, icon("refresh"), "Reload config files")) : null,
-    h("p", { class: "help" }, "Prometheus metrics: GET /metrics on this listener with a viewer or editor token."));
+    h("p", { class: "help" }, "Prometheus metrics: GET /metrics on this listener with a viewer or editor token. " +
+      "Traces: set telemetry.otlp_endpoint in config.json (or OTEL_EXPORTER_OTLP_ENDPOINT); log rows then carry the trace id."));
   return { el };
 }
 

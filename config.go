@@ -19,22 +19,23 @@ const SchemaBase = "https://raw.githubusercontent.com/skpjr001/fluid-config/main
 // StaticConfig is read once at startup. Everything that changes at runtime
 // (API files, admin tokens, access lists) lives in DynamicDir.
 type StaticConfig struct {
-	Schema          string         `json:"$schema,omitempty"`
-	APIAddr         string         `json:"api_addr"`            // the generated REST APIs (public)
-	AdminAddr       string         `json:"admin_addr"`          // console + admin API; keep on 127.0.0.1
-	APIBasePath     string         `json:"api_base_path"`       // e.g. "/config" -> /config/v1/holidays
-	AdminBasePath   string         `json:"admin_base_path"`     // path prefix for the console
-	APITLS          *TLSConfig     `json:"api_tls,omitempty"`   // serve the APIs over HTTPS without a reverse proxy
-	AdminTLS        *TLSConfig     `json:"admin_tls,omitempty"` // serve the console over HTTPS
-	DynamicDir      string         `json:"dynamic_dir"`         // apis/, admin.json, access.json (hot-reloaded)
-	ReloadInterval  Duration       `json:"reload_interval"`     // how often DynamicDir is checked for changes
-	TrustedProxies  []string       `json:"trusted_proxies"`     // CIDRs whose X-Forwarded-For is believed
-	MaxBodyBytes    int64          `json:"max_body_bytes"`      // request body cap on the API listener
-	MaxPageSize     int            `json:"max_page_size"`       // largest ?limit= a list accepts
-	PublicCatalog   bool           `json:"public_catalog"`      // /_catalog and /openapi.json without a token
-	ShutdownTimeout Duration       `json:"shutdown_timeout"`    // graceful shutdown: time to finish in-flight requests
-	ShutdownDelay   Duration       `json:"shutdown_delay"`      // keep serving this long after SIGTERM while /readyz fails
-	Database        DatabaseConfig `json:"database"`
+	Schema          string          `json:"$schema,omitempty"`
+	APIAddr         string          `json:"api_addr"`            // the generated REST APIs (public)
+	AdminAddr       string          `json:"admin_addr"`          // console + admin API; keep on 127.0.0.1
+	APIBasePath     string          `json:"api_base_path"`       // e.g. "/config" -> /config/v1/holidays
+	AdminBasePath   string          `json:"admin_base_path"`     // path prefix for the console
+	APITLS          *TLSConfig      `json:"api_tls,omitempty"`   // serve the APIs over HTTPS without a reverse proxy
+	AdminTLS        *TLSConfig      `json:"admin_tls,omitempty"` // serve the console over HTTPS
+	DynamicDir      string          `json:"dynamic_dir"`         // apis/, admin.json, access.json (hot-reloaded)
+	ReloadInterval  Duration        `json:"reload_interval"`     // how often DynamicDir is checked for changes
+	TrustedProxies  []string        `json:"trusted_proxies"`     // CIDRs whose X-Forwarded-For is believed
+	MaxBodyBytes    int64           `json:"max_body_bytes"`      // request body cap on the API listener
+	MaxPageSize     int             `json:"max_page_size"`       // largest ?limit= a list accepts
+	PublicCatalog   bool            `json:"public_catalog"`      // /_catalog and /openapi.json without a token
+	ShutdownTimeout Duration        `json:"shutdown_timeout"`    // graceful shutdown: time to finish in-flight requests
+	ShutdownDelay   Duration        `json:"shutdown_delay"`      // keep serving this long after SIGTERM while /readyz fails
+	Database        DatabaseConfig  `json:"database"`
+	Telemetry       TelemetryConfig `json:"telemetry"`
 
 	trusted []netip.Prefix
 }
@@ -48,6 +49,14 @@ type DatabaseConfig struct {
 	// Every API call stores its request/response headers and bodies.
 	CapturePayloads     bool  `json:"capture_payloads"`
 	CaptureMaxBodyBytes int64 `json:"capture_max_body_bytes"` // per body; longer bodies are cut (the full size is recorded)
+}
+
+// TelemetryConfig exports OpenTelemetry traces over OTLP/HTTP.
+type TelemetryConfig struct {
+	OTLPEndpoint string            `json:"otlp_endpoint"` // e.g. "http://otel-collector:4318"; empty = OTEL_EXPORTER_OTLP_ENDPOINT, else tracing off
+	ServiceName  string            `json:"service_name"`
+	SampleRatio  float64           `json:"sample_ratio"`      // fraction of new traces kept; continued traces follow the caller
+	Headers      map[string]string `json:"headers,omitempty"` // sent to the collector (e.g. an API key)
 }
 
 // RateLimit is a token bucket per client IP. Zero RequestsPerMinute disables it.
@@ -87,6 +96,7 @@ func defaultStatic() *StaticConfig {
 		ShutdownTimeout: Duration(15 * time.Second),
 		Database: DatabaseConfig{Path: "./data/fluid-config.db", RetentionDays: 14, AuditRetentionDays: 365,
 			LogLevel: "info", CapturePayloads: true, CaptureMaxBodyBytes: 1 << 20},
+		Telemetry: TelemetryConfig{ServiceName: "fluid-config", SampleRatio: 1},
 	}
 }
 
@@ -206,6 +216,12 @@ func (c *StaticConfig) validate() error {
 	}
 	if _, ok := levelByName[strings.ToLower(c.Database.LogLevel)]; !ok {
 		errs = append(errs, errors.New("database.log_level must be debug, info, warn or error"))
+	}
+	if c.Telemetry.SampleRatio < 0 || c.Telemetry.SampleRatio > 1 {
+		errs = append(errs, errors.New("telemetry.sample_ratio must be between 0 and 1"))
+	}
+	if c.Telemetry.ServiceName == "" {
+		errs = append(errs, errors.New("telemetry.service_name must not be empty"))
 	}
 	return errors.Join(errs...)
 }

@@ -22,7 +22,7 @@ import (
 // matching level and shown in `fluid-config check` and the console.
 type DeployNote struct {
 	Level   string `json:"level"` // info | warn | error
-	Topic   string `json:"topic"` // runtime, api, admin, access, tls, storage, config
+	Topic   string `json:"topic"` // runtime, api, admin, access, tls, storage, telemetry, config
 	Message string `json:"message"`
 }
 
@@ -251,6 +251,9 @@ func deploymentNotes(cfg *StaticConfig, snap *snapshot, env hostEnv, envAdmin bo
 	}
 	if cached > 0 {
 		n.add("info", "api", "%d API(s) cache responses in memory; entries expire by ttl_seconds and are dropped on every change, or purge them in the console", cached)
+	}
+	if t := cfg.Telemetry; otlpEndpoint(t) != "" {
+		n.add("info", "telemetry", "traces go to %s/v1/traces over OTLP/HTTP as %q (sample_ratio %g; continued traces follow the caller); log rows record the trace id", otlpEndpoint(t), t.ServiceName, t.SampleRatio)
 	}
 	if strings.EqualFold(cfg.Database.LogLevel, "debug") {
 		n.add("info", "storage", "log_level is debug: the log table will grow quickly")

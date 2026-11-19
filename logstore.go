@@ -294,6 +294,9 @@ func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
 		set(a)
 	}
 	r.Attrs(func(a slog.Attr) bool { set(a); return true })
+	if row.TraceID == "" {
+		row.TraceID = traceIDFrom(ctx)
+	}
 	if row.capture != nil {
 		row.capture.whenDone(func() { h.sink.enqueue(row) }) // stored once the body has been fully seen
 	} else {
