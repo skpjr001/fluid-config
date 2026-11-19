@@ -1,0 +1,10 @@
+{
+  "addr": ":8090",
+  "apis_dir": "./apis",
+  "base_path": "",
+  "reload_interval": "2s",
+  "trust_forwarded_for": false,
+  "catalog_token": "",
+  "max_body_bytes": 1048576,
+  "max_page_size": 1000
+}

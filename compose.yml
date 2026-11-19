@@ -1,0 +1,20 @@
+services:
+  fluid-config:
+    build: .
+    restart: unless-stopped
+    # container runs as uid 65532: `sudo chown -R 65532 ./apis` once, since writes go back to the files
+    env_file: .env                      # HOLIDAYS_TOKEN=..., FLUID_CATALOG_TOKEN=...
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./apis:/app/apis
+    networks: [traefik]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.fluid.rule=Host(`config.example.com`)
+      - traefik.http.routers.fluid.entrypoints=websecure
+      - traefik.http.routers.fluid.tls.certresolver=le
+      - traefik.http.services.fluid.loadbalancer.server.port=8090
+
+networks:
+  traefik:
+    external: true
