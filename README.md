@@ -56,7 +56,7 @@ docker run -d --name fluid-config -p 127.0.0.1:8090:8090 -p 127.0.0.1:9090:9090 
 docker exec fluid-config /fluid-config token -config /app/config.json
 ```
 
-Keep `/app/dynamic` on a volume: records written through the API live in the API files there. For the Traefik setup in [`compose.yml`](compose.yml): `cp config.docker.json config.json`, `cp example.env .env` and fill in the secrets for `env:` tokens, set the host in `compose.yml`, then `docker compose up -d`.
+Keep `/app/dynamic` on a volume: records written through the API live in the API files there. For the Traefik setup in [`compose.yml`](compose.yml): `cp examples/config.docker.json config.json`, `cp example.env .env` and fill in the secrets for `env:` tokens, set the host in `compose.yml`, then `docker compose up -d`.
 
 **Then** open the console (through an SSH tunnel: `ssh -L 9090:127.0.0.1:9090 server`, then <http://localhost:9090>) and sign in with the token. Create an API with **APIs → Create API**, or drop a JSON file in `dynamic/apis/` and it is served within `reload_interval` (2s).
 
@@ -224,10 +224,24 @@ Deleting an API from the console moves its file to `apis/.deleted/`, so you can 
 - **Write formatting.** A write re-serializes the file in a fixed field order, so comments and hand formatting in that file are lost. Keep docs in `description`.
 - **Read-only files** (a `:ro` mount) answer writes with 409 and a clear message, and a deployment note says so.
 - **Graceful shutdown.** On SIGTERM, `/readyz` fails. With `shutdown_delay`, fluid-config keeps serving that long, then gives in-flight requests up to `shutdown_timeout` (15s) to finish, flushes logs and closes the database. A second signal stops at once. Give containers a longer stop timeout: `stop_grace_period: 30s`.
+- **Startup and shutdown hooks.** Your own code can run before and after startup and before and after shutdown; see [Startup and shutdown hooks](#startup-and-shutdown-hooks).
+
+### Startup and shutdown hooks
+
+To run your own code around startup and shutdown, fill in the blocks in [`cmd/fluid-config/hooks.go`](cmd/fluid-config/hooks.go) and build fluid-config:
+
+| Hook | Runs | Waits for it |
+|---|---|---|
+| `BeforeStartup` | config loaded and logging ready, before any listener opens | startup, at most `Timeout` |
+| `AfterStartup` | both listeners accept requests | nothing: runs in the background, cancelled if shutdown begins first |
+| `BeforeShutdown` | a stop signal arrived and `/readyz` fails, before connections drain | shutdown, alongside `shutdown_delay` (only the part longer than the delay adds time), at most `Timeout` |
+| `AfterShutdown` | listeners closed and in-flight requests finished, before logs are flushed and the database closes | exit, at most `Timeout` |
+
+Hooks cannot break startup or graceful shutdown. An error or a panic is logged (`hook failed; carrying on`) and fluid-config continues. A hook still running at `Timeout` (default `10s`, set per build in `hooks.go`) gets its `ctx` cancelled and is left behind while fluid-config carries on, so watch `ctx` in slow work. Each run is logged with how long it took; `log/slog` output from a hook reaches stdout and the console's Logs page. Keep `Timeout` plus `shutdown_timeout` below your container's stop grace period.
 
 ## Static config
 
-`config.json` is read once at startup; see [`config.example.json`](config.example.json) and the [schema](schema/config.schema.json).
+`config.json` is read once at startup; see [`examples/config.example.json`](examples/config.example.json) and the [schema](schema/config.schema.json).
 
 | Setting | Default | |
 |---|---|---|
@@ -268,7 +282,24 @@ go test -race ./...         # unit and integration tests
 ./deploy/e2e/test.sh        # behind real nginx, Traefik and Caddy, plus TLS and ACME (Docker or Podman)
 go vet ./... && gofmt -l .
 node --check ui/app.js
+go build -o fluid-config ./cmd/fluid-config
 ```
+
+Layout:
+
+| Path | What it holds |
+|---|---|
+| `cmd/fluid-config/` | the entry point and your [startup and shutdown hooks](#startup-and-shutdown-hooks) |
+| `internal/server/` | the service: API files, generated endpoints, records, cache, access rules, console API, change history, request logs |
+| `internal/config/` | `config.json`: loading, defaults, validation |
+| `internal/database/` | SQLite: open, migrations |
+| `internal/hooks/` | running hooks safely |
+| `internal/hub/` | live updates for the console's streams |
+| `internal/metrics/` | the Prometheus registry |
+| `internal/telemetry/` | OpenTelemetry tracing |
+| `ui/`, `schema/` | the console files and the JSON Schemas, embedded in the binary |
+| `examples/` | `config.example.json`, `config.docker.json` and sample API files |
+| `deploy/` | installer, systemd, nginx, Traefik and Caddy examples, e2e suite |
 
 The console is plain JavaScript embedded in the binary, with no build step. Its strict CSP allows no inline scripts or styles, and all DOM is built with `textContent`. The schemas in [`schema/`](schema) are checked against the Go structs by the tests.
 

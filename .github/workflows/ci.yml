@@ -41,11 +41,11 @@ jobs:
         env:
           HOLIDAYS_TOKEN: ci-example-token
         run: |
-          mkdir -p /tmp/fc && sed 's#"./dynamic"#"'"$PWD"'/examples/dynamic"#' config.example.json > /tmp/fc/config.json
-          go run . check -config /tmp/fc/config.json
+          mkdir -p /tmp/fc && sed 's#"./dynamic"#"'"$PWD"'/examples/dynamic"#' examples/config.example.json > /tmp/fc/config.json
+          go run ./cmd/fluid-config check -config /tmp/fc/config.json
 
       - name: Build
-        run: CGO_ENABLED=0 go build -trimpath -o fluid-config .
+        run: CGO_ENABLED=0 go build -trimpath -o fluid-config ./cmd/fluid-config
 
   container:
     # The image as users run it: first start with nothing mounted, an API
