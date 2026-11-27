@@ -8,6 +8,7 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -67,14 +68,18 @@ func (h Hooks) Run(parent context.Context, name string, fn Func) {
 		done <- fn(ctx)
 	}()
 	took := func() string { return time.Since(start).Round(time.Millisecond).String() }
+	var err error
 	select {
-	case err := <-done:
-		if err != nil {
-			slog.Error("hook failed; carrying on", "kind", "system", "hook", name, "took", took(), "err", err)
-			return
-		}
-		slog.Info("hook done", "kind", "system", "hook", name, "took", took())
+	case err = <-done:
 	case <-ctx.Done():
+		err = ctx.Err()
+	}
+	switch {
+	case err == nil:
+		slog.Info("hook done", "kind", "system", "hook", name, "took", took())
+	case ctx.Err() == nil || !errors.Is(err, ctx.Err()):
+		slog.Error("hook failed; carrying on", "kind", "system", "hook", name, "took", took(), "err", err)
+	default: // timed out or cancelled, whether or not the hook returned in time
 		if parent.Err() != nil {
 			slog.Warn("hook cancelled: fluid-config is stopping", "kind", "system", "hook", name, "took", took())
 			return
